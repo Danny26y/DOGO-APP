@@ -1,0 +1,10 @@
+.env
+.venv/
+*.db
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+alembic/versions/__pycache__/
+.docker-config/
