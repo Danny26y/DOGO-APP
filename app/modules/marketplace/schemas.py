@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 
 class CategoryResponse(BaseModel):
@@ -52,6 +52,46 @@ class ProductResponse(BaseModel):
     stock_quantity: int
     published: bool
     created_at: datetime
+
+
+class StoreProfileUpsert(BaseModel):
+    storefront_slug: str = Field(min_length=3, max_length=80, pattern="^[a-z0-9]+(?:-[a-z0-9]+)*$")
+    description: str = Field(default="", max_length=3000)
+    support_email: EmailStr | None = None
+    support_phone: str | None = Field(default=None, min_length=7, max_length=32)
+    website_url: AnyHttpUrl | None = None
+    logo_url: AnyHttpUrl | None = None
+
+
+class StoreProfileResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    organization_id: str
+    storefront_slug: str
+    description: str
+    support_email: EmailStr | None
+    support_phone: str | None
+    website_url: AnyHttpUrl | None
+    logo_url: AnyHttpUrl | None
+    updated_at: datetime
+
+
+class PublicStorefrontResponse(BaseModel):
+    organization_name: str
+    storefront_slug: str
+    description: str
+    support_email: EmailStr | None
+    support_phone: str | None
+    website_url: AnyHttpUrl | None
+    logo_url: AnyHttpUrl | None
+    products: list[ProductResponse]
+
+
+class MerchantDashboardResponse(BaseModel):
+    product_count: int
+    published_product_count: int
+    out_of_stock_product_count: int
+    order_count: int
+    orders_by_status: dict[str, int]
 
 
 class InventoryAdjustment(BaseModel):

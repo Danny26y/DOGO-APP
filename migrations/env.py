@@ -11,6 +11,7 @@ from app.modules.shipments import models as shipment_models  # noqa: F401
 from app.modules.marketplace import models as marketplace_models  # noqa: F401
 from app.modules.orders import models as order_models  # noqa: F401
 from app.modules.audit import models as audit_models  # noqa: F401
+from app.modules.customers import models as customer_models  # noqa: F401
 
 config = context.config
 if config.config_file_name:

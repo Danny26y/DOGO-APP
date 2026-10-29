@@ -16,6 +16,19 @@ class ProductCategory(Base):
     name: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
 
 
+class MerchantStoreProfile(Base):
+    __tablename__ = "merchant_store_profiles"
+
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True)
+    storefront_slug: Mapped[str] = mapped_column(String(80), unique=True, index=True, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    support_email: Mapped[str | None] = mapped_column(String(320))
+    support_phone: Mapped[str | None] = mapped_column(String(32))
+    website_url: Mapped[str | None] = mapped_column(String(500))
+    logo_url: Mapped[str | None] = mapped_column(String(500))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC), nullable=False)
+
+
 class Product(Base):
     __tablename__ = "products"
 

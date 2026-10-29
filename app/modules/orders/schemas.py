@@ -21,6 +21,23 @@ class CartResponse(BaseModel):
     items: list[CartItemResponse]
 
 
+class CreateOrderRequest(BaseModel):
+    delivery_address_id: str
+
+
+class DeliveryAddressSnapshot(BaseModel):
+    label: str
+    recipient_name: str
+    recipient_phone: str
+    address_line1: str
+    address_line2: str | None
+    city: str
+    state: str
+    postal_code: str | None
+    country_code: str
+    delivery_instructions: str | None
+
+
 class OrderItemResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     product_id: str
@@ -38,6 +55,8 @@ class OrderResponse(BaseModel):
     payment_status: str
     currency: str
     subtotal_minor: int
+    delivery_address_id: str | None
+    delivery_address_snapshot: DeliveryAddressSnapshot | None
     created_at: datetime
     items: list[OrderItemResponse]
 

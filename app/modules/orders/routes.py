@@ -7,11 +7,13 @@ from app.api.dependencies import get_current_user
 from app.db.session import get_db
 from app.modules.audit.service import record_audit
 from app.modules.auth.models import OrganizationMembership, User
+from app.modules.customers.models import CustomerAddress
 from app.modules.marketplace.models import Product
 from app.modules.orders.models import Cart, CartItem, Order, OrderItem
 from app.modules.orders.schemas import (
     CartItemInput,
     CartResponse,
+    CreateOrderRequest,
     MerchantOrderResponse,
     OrderItemResponse,
     OrderResponse,
@@ -73,13 +75,19 @@ def delete_cart_item(product_id: str, user: User = Depends(get_current_user), db
 
 @router.post("/orders", response_model=OrderResponse, status_code=201)
 def create_order(
+    payload: CreateOrderRequest,
     user: User = Depends(get_current_user),
     idempotency_key: str = Header(alias="Idempotency-Key", min_length=8, max_length=255),
     db: Session = Depends(get_db),
 ):
     existing = db.scalar(select(Order).options(selectinload(Order.items)).where(Order.customer_user_id == user.id, Order.idempotency_key == idempotency_key))
     if existing is not None:
+        if existing.delivery_address_id != payload.delivery_address_id:
+            raise HTTPException(status_code=409, detail="Idempotency key was already used with a different delivery address")
         return existing
+    address = db.scalar(select(CustomerAddress).where(CustomerAddress.id == payload.delivery_address_id, CustomerAddress.user_id == user.id))
+    if address is None:
+        raise HTTPException(status_code=404, detail="Delivery address not found")
     cart = db.scalar(select(Cart).options(selectinload(Cart.items)).where(Cart.customer_user_id == user.id).with_for_update())
     if cart is None or not cart.items:
         raise HTTPException(status_code=409, detail="Cart is empty")
@@ -93,7 +101,26 @@ def create_order(
     if len(currencies) != 1:
         raise HTTPException(status_code=409, detail="All products in a single order must use the same currency")
     subtotal = sum(item.quantity * product.price_minor for item, product in products)
-    order = Order(customer_user_id=user.id, idempotency_key=idempotency_key, currency=currencies.pop(), subtotal_minor=subtotal)
+    address_snapshot = {
+        "label": address.label,
+        "recipient_name": address.recipient_name,
+        "recipient_phone": address.recipient_phone,
+        "address_line1": address.address_line1,
+        "address_line2": address.address_line2,
+        "city": address.city,
+        "state": address.state,
+        "postal_code": address.postal_code,
+        "country_code": address.country_code,
+        "delivery_instructions": address.delivery_instructions,
+    }
+    order = Order(
+        customer_user_id=user.id,
+        idempotency_key=idempotency_key,
+        currency=currencies.pop(),
+        subtotal_minor=subtotal,
+        delivery_address_id=address.id,
+        delivery_address_snapshot=address_snapshot,
+    )
     db.add(order)
     try:
         db.flush()

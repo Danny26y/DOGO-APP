@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -39,6 +39,8 @@ class Order(Base):
     payment_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
     subtotal_minor: Mapped[int] = mapped_column(Integer, nullable=False)
+    delivery_address_id: Mapped[str | None] = mapped_column(String(36))
+    delivery_address_snapshot: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
     items: Mapped[list["OrderItem"]] = relationship(back_populates="order", cascade="all, delete-orphan")
 

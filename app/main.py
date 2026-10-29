@@ -16,6 +16,8 @@ from app.modules.audit.routes import router as audit_router
 from app.modules.auth import models as auth_models  # noqa: F401 - registers ORM tables
 from app.modules.auth.routes import identity_router, organizations_router
 from app.modules.auth.routes import router as auth_router
+from app.modules.customers.routes import router as customers_router
+from app.modules.dashboards.routes import router as dashboards_router
 from app.modules.marketplace.routes import router as marketplace_router
 from app.modules.orders.routes import router as orders_router
 from app.modules.pricing.routes import router as pricing_router
@@ -73,3 +75,5 @@ app.include_router(marketplace_router, prefix=f"{settings.api_v1_prefix}", tags=
 app.include_router(shipments_router, prefix=settings.api_v1_prefix, tags=["shipments", "tracking", "waybills"])
 app.include_router(orders_router, prefix=settings.api_v1_prefix, tags=["orders", "cart"])
 app.include_router(audit_router, prefix=settings.api_v1_prefix, tags=["administration"])
+app.include_router(customers_router, prefix=settings.api_v1_prefix, tags=["customers"])
+app.include_router(dashboards_router, prefix=settings.api_v1_prefix, tags=["dashboards"])

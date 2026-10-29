@@ -28,12 +28,23 @@ class UserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: str
     email: EmailStr
+    full_name: str | None
+    phone: str | None
     created_at: datetime
+
+
+class UserProfileUpdate(BaseModel):
+    full_name: str | None = Field(default=None, min_length=1, max_length=160)
+    phone: str | None = Field(default=None, min_length=7, max_length=32)
 
 
 class OrganizationCreate(BaseModel):
     name: str = Field(min_length=2, max_length=200)
     organization_type: str = Field(default="business", pattern="^(business|enterprise|individual)$")
+
+
+class OrganizationUpdate(BaseModel):
+    name: str = Field(min_length=2, max_length=200)
 
 
 class OrganizationResponse(BaseModel):
@@ -47,6 +58,10 @@ class OrganizationResponse(BaseModel):
 class OrganizationMemberAdd(BaseModel):
     email: EmailStr
     role: str = Field(default="member", pattern="^(admin|member|merchant_staff|enterprise_user)$")
+
+
+class OrganizationMemberUpdate(BaseModel):
+    role: str = Field(pattern="^(admin|member|merchant_staff|enterprise_user)$")
 
 
 class OrganizationMemberResponse(BaseModel):

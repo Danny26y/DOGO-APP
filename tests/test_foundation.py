@@ -81,6 +81,17 @@ def test_organization_is_owned_by_creator():
     assert created.json()["role"] == "owner"
     listed = client.get("/api/v1/organizations", headers=headers)
     assert len(listed.json()) == 1
+    other = client.post("/api/v1/auth/register", json={"email": "org-member@example.com", "password": "Correct-Horse-88!"})
+    added = client.post(f"/api/v1/organizations/{created.json()['id']}/members", headers=headers, json={"email": "org-member@example.com", "role": "member"})
+    assert added.status_code == 201
+    changed = client.patch(f"/api/v1/organizations/{created.json()['id']}/members/{other.json()['access_token']}", headers=headers, json={"role": "merchant_staff"})
+    assert changed.status_code == 404
+    member_user = client.get("/api/v1/users/me", headers={"Authorization": f"Bearer {other.json()['access_token']}"}).json()
+    changed = client.patch(f"/api/v1/organizations/{created.json()['id']}/members/{member_user['id']}", headers=headers, json={"role": "merchant_staff"})
+    assert changed.status_code == 200
+    assert changed.json()["role"] == "merchant_staff"
+    removed = client.delete(f"/api/v1/organizations/{created.json()['id']}/members/{member_user['id']}", headers=headers)
+    assert removed.status_code == 204
 
 
 def test_validation_error_shape_and_request_id():
@@ -227,14 +238,36 @@ def test_product_catalog_and_inventory_are_tenant_scoped(monkeypatch):
         session.commit()
     added_to_cart = client.put("/api/v1/cart/items", headers=headers, json={"product_id": product["id"], "quantity": 1})
     assert added_to_cart.status_code == 200
-    created_order = client.post("/api/v1/orders", headers={**headers, "Idempotency-Key": "order-key-0001"})
+    address = client.post("/api/v1/customers/me/addresses", headers=headers, json={
+        "label": "Home",
+        "recipient_name": "Customer One",
+        "recipient_phone": "+2348000000010",
+        "address_line1": "1 Market Road",
+        "city": "Lagos",
+        "state": "Lagos",
+        "country_code": "NG",
+    })
+    assert address.status_code == 201
+    created_order = client.post("/api/v1/orders", headers={**headers, "Idempotency-Key": "order-key-0001"}, json={"delivery_address_id": address.json()["id"]})
     assert created_order.status_code == 201
     order = created_order.json()
     assert order["status"] == "awaiting_payment"
     assert order["payment_status"] == "pending"
     assert order["subtotal_minor"] == 100000
-    repeated_order = client.post("/api/v1/orders", headers={**headers, "Idempotency-Key": "order-key-0001"})
+    assert order["delivery_address_snapshot"]["address_line1"] == "1 Market Road"
+    repeated_order = client.post("/api/v1/orders", headers={**headers, "Idempotency-Key": "order-key-0001"}, json={"delivery_address_id": address.json()["id"]})
     assert repeated_order.json()["id"] == order["id"]
+    different_address = client.post("/api/v1/customers/me/addresses", headers=headers, json={
+        "label": "Office",
+        "recipient_name": "Customer One",
+        "recipient_phone": "+2348000000010",
+        "address_line1": "2 Office Road",
+        "city": "Lagos",
+        "state": "Lagos",
+        "country_code": "NG",
+    })
+    conflict = client.post("/api/v1/orders", headers={**headers, "Idempotency-Key": "order-key-0001"}, json={"delivery_address_id": different_address.json()["id"]})
+    assert conflict.status_code == 409
     merchant_orders = client.get(f"/api/v1/merchant/orders?organization_id={organization_id}", headers=headers)
     assert merchant_orders.status_code == 200
     assert merchant_orders.json()[0]["merchant_subtotal_minor"] == 100000
@@ -252,3 +285,80 @@ def test_product_catalog_and_inventory_are_tenant_scoped(monkeypatch):
     audit_response = client.get("/api/v1/admin/audit-logs", headers=headers)
     assert audit_response.status_code == 200
     assert {item["action"] for item in audit_response.json()} >= {"inventory.adjusted", "order.created"}
+
+
+def test_customer_profile_addresses_and_dashboard():
+    registration = client.post("/api/v1/auth/register", json={"email": "address-book@example.com", "password": "Correct-Horse-55!"})
+    headers = {"Authorization": f"Bearer {registration.json()['access_token']}"}
+    profile = client.patch("/api/v1/users/me", headers=headers, json={"full_name": "A Customer", "phone": "+2348012345678"})
+    assert profile.status_code == 200
+    assert profile.json()["full_name"] == "A Customer"
+
+    address_payload = {
+        "label": "Home",
+        "recipient_name": "A Customer",
+        "recipient_phone": "+2348012345678",
+        "address_line1": "10 Example Street",
+        "city": "Lagos",
+        "state": "Lagos",
+        "country_code": "NG",
+    }
+    first = client.post("/api/v1/customers/me/addresses", headers=headers, json=address_payload)
+    assert first.status_code == 201
+    assert first.json()["is_default"] is True
+    second = client.post("/api/v1/customers/me/addresses", headers=headers, json={**address_payload, "label": "Office"})
+    assert second.status_code == 201
+    selected = client.patch(f"/api/v1/customers/me/addresses/{second.json()['id']}", headers=headers, json={"is_default": True})
+    assert selected.status_code == 200
+    addresses = client.get("/api/v1/customers/me/addresses", headers=headers).json()
+    assert sum(address["is_default"] for address in addresses) == 1
+
+    dashboard = client.get("/api/v1/customers/me/dashboard", headers=headers)
+    assert dashboard.status_code == 200
+    assert dashboard.json()["saved_address_count"] == 2
+    other = client.post("/api/v1/auth/register", json={"email": "different-customer@example.com", "password": "Correct-Horse-66!"})
+    other_headers = {"Authorization": f"Bearer {other.json()['access_token']}"}
+    assert client.get("/api/v1/customers/me/addresses", headers=other_headers).json() == []
+    assert client.patch(f"/api/v1/customers/me/addresses/{first.json()['id']}", headers=other_headers, json={"label": "Stolen"}).status_code == 404
+
+
+def test_store_profile_storefront_and_dashboard(monkeypatch):
+    registration = client.post("/api/v1/auth/register", json={"email": "store-owner@example.com", "password": "Correct-Horse-77!"})
+    headers = {"Authorization": f"Bearer {registration.json()['access_token']}"}
+    organization = client.post("/api/v1/organizations", headers=headers, json={"name": "Example Store", "organization_type": "business"})
+    organization_id = organization.json()["id"]
+
+    profile = client.put(
+        f"/api/v1/merchant/store-profile?organization_id={organization_id}",
+        headers=headers,
+        json={"storefront_slug": "example-store", "description": "A public catalog", "support_email": "support@example.com"},
+    )
+    assert profile.status_code == 200
+    assert client.get(f"/api/v1/merchant/store-profile?organization_id={organization_id}", headers=headers).status_code == 200
+    assert client.get("/api/v1/marketplace/stores/example-store").json()["products"] == []
+
+    category = client.get("/api/v1/marketplace/categories").json()[0]
+    product = client.post("/api/v1/merchant/products", headers=headers, json={
+        "organization_id": organization_id,
+        "category_id": category["id"],
+        "title": "Storefront Item",
+        "price_minor": 12345,
+        "initial_stock": 3,
+    }).json()
+    monkeypatch.setattr("app.modules.marketplace.routes.get_settings", lambda: SimpleNamespace(platform_admin_email_set={"store-owner@example.com"}))
+    review_queue = client.get("/api/v1/admin/products/review-queue", headers=headers)
+    assert review_queue.status_code == 200
+    assert [item["id"] for item in review_queue.json()] == [product["id"]]
+    published = client.post(f"/api/v1/admin/products/{product['id']}/publish?organization_id={organization_id}", headers=headers)
+    assert published.status_code == 200
+    storefront = client.get("/api/v1/marketplace/stores/example-store")
+    assert storefront.status_code == 200
+    assert [item["id"] for item in storefront.json()["products"]] == [product["id"]]
+
+    merchant_dashboard = client.get(f"/api/v1/merchant/dashboard?organization_id={organization_id}", headers=headers)
+    assert merchant_dashboard.status_code == 200
+    assert merchant_dashboard.json()["published_product_count"] == 1
+    monkeypatch.setattr("app.modules.dashboards.routes.get_settings", lambda: SimpleNamespace(platform_admin_email_set={"store-owner@example.com"}))
+    admin_dashboard = client.get("/api/v1/admin/dashboard/summary", headers=headers)
+    assert admin_dashboard.status_code == 200
+    assert admin_dashboard.json()["product_count"] >= 1

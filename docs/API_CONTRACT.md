@@ -10,8 +10,14 @@ Base path: `/api/v1`. OpenAPI is exposed by FastAPI at `/openapi.json`; interact
 | `POST /auth/refresh` | Rotate refresh session | Refresh token body | One-time rotation; reuse revokes that token family |
 | `POST /auth/logout` | Revoke refresh session | Refresh token body | Access token remains valid until its short expiry |
 | `GET /users/me` | Current user | Authenticated | Implemented; caller profile only |
+| `PATCH /users/me` | Update customer profile | Authenticated | Updates name and phone; email remains unchanged pending email verification support |
+| `GET/POST /customers/me/addresses` | Read/create saved delivery addresses | Authenticated | Address book belongs to caller; first address becomes default |
+| `PATCH/DELETE /customers/me/addresses/{id}` | Update/delete saved address | Authenticated | Tenant-scoped; deleting default selects a remaining address |
+| `GET /customers/me/dashboard` | Customer dashboard summary | Authenticated | Order counts by current order status and saved-address count; no financial claims |
 | `GET/POST /organizations` | List/create organization | Authenticated | Implemented; caller memberships; creator is owner |
+| `PATCH /organizations/{id}` | Rename organization | Owner/admin | Organization metadata only; auditable |
 | `GET/POST /organizations/{id}/members` | List/add organization members | Owner manages; owner/admin reads | Adds an existing active account; roles are organization-scoped |
+| `PATCH/DELETE /organizations/{id}/members/{user_id}` | Change/remove a member | Owner | Owner membership cannot be changed or removed; role change does not grant platform access |
 | `POST /pricing/quotes` | Fare estimate | Public | Configured exact zone-pair/tier rule; 503 if unavailable; 15-minute quote |
 | `POST /pricing/rules`, `GET /pricing/rules` | Manage fare rules | Platform admin email allowlist | Minor-unit base plus per-kg surcharge; no default rates |
 | `GET /tracking/{tracking_number}` | Shipment tracking | Public | Status timeline only; no contact details or street addresses |
@@ -22,12 +28,17 @@ Base path: `/api/v1`. OpenAPI is exposed by FastAPI at `/openapi.json`; interact
 | `GET /marketplace/products` | Browse catalog | Public | Search by title; category filter; `limit`/`offset`; published/in-stock items only |
 | `GET /marketplace/categories` | List product departments | Public | Eight Section 8.8 categories |
 | `GET /merchant/products` | List merchant catalog | Merchant owner | `organization_id`, `limit`, `offset`; tenant-scoped |
+| `GET/PUT /merchant/store-profile` | Read/update merchant storefront profile | Merchant owner/admin/staff | Storefront slug, description, support contact and optional web-hosted media URLs |
+| `GET /merchant/dashboard` | Merchant dashboard summary | Merchant owner/admin/staff | Catalog counts, out-of-stock count and order counts by status; excludes payments and revenue |
 | `POST /merchant/products`, `PATCH /merchant/products/{id}` | Manage catalog | Merchant owner | Tenant-scoped; new items remain unpublished |
 | `POST /merchant/products/{id}/inventory` | Adjust stock | Merchant owner | Atomic delta; no negative stock; movement audit |
-| `POST /merchant/products/{id}/publish` | Publish item | Platform admin allowlist | Manual platform review gate; KYB automation pending |
+| `POST /admin/products/{id}/publish` | Publish item | Platform admin allowlist | Manual platform review gate; KYB automation pending |
+| `GET /admin/products/review-queue` | List unpublished catalog items | Platform admin allowlist | Paged oldest-first review queue; publish with the route above |
 | `GET /cart`, `PUT /cart/items`, `DELETE /cart/items/{product_id}` | Read/edit customer cart | Authenticated customer | Cart belongs to caller; only published products can be added |
-| `POST /orders`, `GET /orders` | Create pending order/history | Authenticated customer | Requires `Idempotency-Key`; snapshots prices; stays `awaiting_payment` |
+| `POST /orders`, `GET /orders` | Create pending order/history | Authenticated customer | Requires `Idempotency-Key` and caller-owned `delivery_address_id`; snapshots item prices and selected address; stays `awaiting_payment` |
 | `GET /merchant/orders` | Merchant order view | Merchant owner | Only that merchant's line items and subtotal are returned |
+| `GET /marketplace/stores/{storefront_slug}` | Public merchant storefront | Public | Store profile and paged published, in-stock products |
+| `GET /admin/dashboard/summary` | Platform dashboard summary | Platform admin email allowlist | User, organization, product, order and shipment counts; excludes money, live GPS and dispatch forecasts |
 | `POST /orders/{id}/fulfill` | Fulfill paid order | Owning merchant | Not implemented; requires verified payment workflow |
 | `POST /payments/initialize`, `POST /webhooks/{provider}` | Payment flow | Authenticated/provider signature | Sandbox and deduplicated trusted events |
 | `GET /invoices` | List invoices | Organization member | Tenant-scoped |
@@ -39,6 +50,10 @@ Protected routes use bearer access tokens. Client-supplied organization IDs or r
 
 Register/login return a short-lived access token and an opaque refresh token. `POST /auth/refresh` consumes and rotates a refresh token. Reuse of a rotated token revokes the active token family. `POST /auth/logout` revokes a refresh token.
 
+Customer address responses include recipient and street-address data and are private to the authenticated account. Profile updates do not permit changing the account email. Dashboard endpoints are read-only aggregates over current persisted records. `awaiting_payment` is shown as an order status only and must not be interpreted as paid, revenue, or fulfillment authorization. Storefront profiles do not provide product uploads or media storage; URLs must point to a separately managed public asset.
+
+Rider/driver assignment, rider-specific accounts, live location, delivery SLAs, and operational dashboards do not yet have routes. They remain in the deferred operations milestone until dispatch and proof-of-delivery policies are approved.
+
 ## Pricing and booking example
 
 An illustrative platform-admin rule is `{"origin_zone":"ibadan","destination_zone":"lagos","delivery_tier":"standard","currency":"NGN","base_fare_minor":120000,"per_kg_minor":5000}`. For a 2.25 kg parcel the current formula returns 131250 minor units (kobo): `base_fare_minor + ceil(per_kg_minor * weight_kg)`. These numbers demonstrate the contract only; they are not DOGO-approved fares. Distance and delivery SLA are not calculated. Booking repeats the zones, tier, and weight, and each quote can be consumed once.
@@ -47,7 +62,7 @@ An illustrative platform-admin rule is `{"origin_zone":"ibadan","destination_zon
 
 Merchant product creation accepts an `organization_id`, category ID, title, description, `price_minor`, optional dimensions/weight, currency, and `initial_stock`. Initial stock is recorded as an inventory movement. New products are private drafts; only a platform administrator can publish them after review. Stock changes use signed `quantity_delta` values and a required reason, with a conflict response if the change would make stock negative. Public catalog results include only published items with stock available.
 
-Cart `PUT` sets a product quantity rather than incrementing it. `POST /orders` snapshots the current cart and prices, returns `awaiting_payment` / `pending`, and replays the same order for a repeated idempotency key. It does not charge or reserve inventory. Do not present this order as paid or fulfilled.
+Cart `PUT` sets a product quantity rather than incrementing it. `POST /orders` requires a saved address owned by the customer, snapshots the current cart, prices, and address, returns `awaiting_payment` / `pending`, and replays the same order for a repeated idempotency key only when the delivery address matches. It does not charge or reserve inventory. Do not present this order as paid or fulfilled. Merchant order views omit delivery PII until the verified payment and fulfillment contract is implemented.
 
 ## Bulk booking CSV
 
