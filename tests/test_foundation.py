@@ -362,3 +362,70 @@ def test_store_profile_storefront_and_dashboard(monkeypatch):
     admin_dashboard = client.get("/api/v1/admin/dashboard/summary", headers=headers)
     assert admin_dashboard.status_code == 200
     assert admin_dashboard.json()["product_count"] >= 1
+
+
+def test_driver_and_rider_assignment_workflow(monkeypatch):
+    customer_token = client.post("/api/v1/auth/login", json={"email": "one@example.com", "password": "Correct-Horse-42!"}).json()["access_token"]
+    customer_headers = {"Authorization": f"Bearer {customer_token}"}
+    organization_id = client.get("/api/v1/organizations", headers=customer_headers).json()[0]["id"]
+    quote = client.post("/api/v1/pricing/quotes", json={"origin_zone": "ibadan", "destination_zone": "lagos", "delivery_tier": "standard", "package_weight_kg": 1})
+    assert quote.status_code == 201
+    shipment = client.post("/api/v1/shipments", headers=customer_headers, json={
+        "organization_id": organization_id,
+        "quote_id": quote.json()["quote_id"],
+        "origin_zone": "ibadan",
+        "destination_zone": "lagos",
+        "delivery_tier": "standard",
+        "package_weight_kg": 1,
+        "pickup_address": "Pickup address, Ibadan",
+        "destination_address": "Delivery address, Lagos",
+        "recipient_name": "Shipment Recipient",
+        "recipient_phone": "+2348000000099",
+        "package_category": "parcel",
+    })
+    assert shipment.status_code == 201
+
+    admin = client.post("/api/v1/auth/register", json={"email": "delivery-admin@example.com", "password": "Correct-Horse-99!"})
+    admin_headers = {"Authorization": f"Bearer {admin.json()['access_token']}"}
+    monkeypatch.setattr("app.modules.delivery.routes.get_settings", lambda: SimpleNamespace(platform_admin_email_set={"delivery-admin@example.com"}))
+
+    agent_headers = {}
+    agent_ids = {}
+    for agent_type in ("driver", "rider"):
+        email = f"{agent_type}-agent@example.com"
+        registration = client.post("/api/v1/auth/register", json={"email": email, "password": "Correct-Horse-101!"})
+        headers = {"Authorization": f"Bearer {registration.json()['access_token']}"}
+        updated = client.patch("/api/v1/users/me", headers=headers, json={"full_name": f"Test {agent_type}", "phone": "+2348000000101"})
+        assert updated.status_code == 200
+        application = client.post("/api/v1/delivery/agents/apply", headers=headers, json={"agent_type": agent_type})
+        assert application.status_code == 201
+        assert application.json()["status"] == "pending"
+        approved = client.patch(f"/api/v1/admin/delivery/agents/{application.json()['id']}", headers=admin_headers, json={"status": "active"})
+        assert approved.status_code == 200
+        agent_headers[agent_type] = headers
+        agent_ids[agent_type] = application.json()["id"]
+
+    assignments = {}
+    for agent_type in ("driver", "rider"):
+        assigned = client.post(f"/api/v1/admin/shipments/{shipment.json()['id']}/assignments", headers=admin_headers, json={"delivery_agent_id": agent_ids[agent_type]})
+        assert assigned.status_code == 201
+        assignments[agent_type] = assigned.json()["id"]
+        accepted = client.patch(f"/api/v1/delivery/me/assignments/{assigned.json()['id']}", headers=agent_headers[agent_type], json={"status": "accepted"})
+        assert accepted.status_code == 200
+
+    forbidden = client.post(f"/api/v1/delivery/me/assignments/{assignments['rider']}/events", headers=agent_headers["rider"], json={"status": "in_transit"})
+    assert forbidden.status_code == 403
+    for status in ("pickup_scheduled", "picked_up", "in_transit"):
+        event = client.post(f"/api/v1/delivery/me/assignments/{assignments['driver']}/events", headers=agent_headers["driver"], json={"status": status})
+        assert event.status_code == 200
+    out_for_delivery = client.post(f"/api/v1/delivery/me/assignments/{assignments['rider']}/events", headers=agent_headers["rider"], json={"status": "out_for_delivery"})
+    assert out_for_delivery.status_code == 200
+    missing_proof = client.post(f"/api/v1/delivery/me/assignments/{assignments['rider']}/events", headers=agent_headers["rider"], json={"status": "delivered"})
+    assert missing_proof.status_code == 422
+    delivered = client.post(f"/api/v1/delivery/me/assignments/{assignments['rider']}/events", headers=agent_headers["rider"], json={"status": "delivered", "proof_method": "photo", "proof_reference": "demo-proof-reference"})
+    assert delivered.status_code == 200
+    assert delivered.json()["status"] == "completed"
+    assert delivered.json()["is_current"] is False
+    dashboard = client.get("/api/v1/admin/operations/dashboard", headers=admin_headers)
+    assert dashboard.status_code == 200
+    assert dashboard.json()["shipments_by_status"]["delivered"] >= 1

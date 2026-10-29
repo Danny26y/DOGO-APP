@@ -15,5 +15,7 @@ No business values below are silently treated as settled. Proposed defaults requ
 | Mobile includes hailing/drones; web defers them | API and operational dependencies | Defer hailing/drones from Web MVP | Product/Operations |
 | Successful delivery and proof (OTP/photo/signature) | Disputes and status transitions | Explicit POD methods; no automatic delivered status | Operations/Legal |
 | GPS/rider/dispatch availability | Tracking and ETA reliability | Show only recorded events; no fabricated location/ETA | Operations |
+| Delivery-agent licensing, onboarding evidence and suspension process | Agent eligibility and safety | Core rider/driver profiles, manual assignment and status events are implemented; document-review policy and evidence storage remain separate | Operations/Legal |
+| Automated dispatch and live-location provider | Agent notifications, route tracking and customer ETA | Keep manual assignment as the provider-independent core; add an adapter after vendor and retention choices | Operations/Engineering |
 | “DOGO Mail” versus “DOGO Mall” | Branding | Use “DOGO Mall” provisionally; confirm | Product/Marketing |
 | KYB document storage and retention | Privacy and security | Keep upload disabled pending private storage and retention policy | Legal/Security |

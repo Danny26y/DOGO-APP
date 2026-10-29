@@ -39,6 +39,13 @@ Base path: `/api/v1`. OpenAPI is exposed by FastAPI at `/openapi.json`; interact
 | `GET /merchant/orders` | Merchant order view | Merchant owner | Only that merchant's line items and subtotal are returned |
 | `GET /marketplace/stores/{storefront_slug}` | Public merchant storefront | Public | Store profile and paged published, in-stock products |
 | `GET /admin/dashboard/summary` | Platform dashboard summary | Platform admin email allowlist | User, organization, product, order and shipment counts; excludes money, live GPS and dispatch forecasts |
+| `POST /delivery/agents/apply`, `GET /delivery/me` | Apply for/list rider or driver profile | Authenticated user | Applications start pending; platform admin activation required |
+| `GET /delivery/me/assignments`, `GET /delivery/me/dashboard` | Read agent assignments and summary | Active rider/driver | Caller-owned assignments; dashboard accepts optional `agent_type` filter |
+| `PATCH /delivery/me/assignments/{id}` | Accept/decline an assignment | Assigned active rider/driver | Declines return the work to dispatch; response note is recorded |
+| `POST /delivery/me/assignments/{id}/events` | Record shipment progress | Accepted, active assignment | Role-scoped status transitions; delivery requires proof method/reference to be recorded |
+| `GET /admin/delivery/agents`, `PATCH /admin/delivery/agents/{id}` | Review/activate/suspend delivery agents | Platform admin allowlist | Suspending an agent cancels their current assignments |
+| `POST /admin/shipments/{id}/assignments` | Assign or reassign rider/driver | Platform admin allowlist | One current assignment per agent type per shipment; manual dispatch |
+| `GET /admin/operations/dashboard` | Operations dashboard summary | Platform admin allowlist | Counts agents, assignments and shipment statuses; excludes live location and forecasts |
 | `POST /orders/{id}/fulfill` | Fulfill paid order | Owning merchant | Not implemented; requires verified payment workflow |
 | `POST /payments/initialize`, `POST /webhooks/{provider}` | Payment flow | Authenticated/provider signature | Sandbox and deduplicated trusted events |
 | `GET /invoices` | List invoices | Organization member | Tenant-scoped |
@@ -52,7 +59,7 @@ Register/login return a short-lived access token and an opaque refresh token. `P
 
 Customer address responses include recipient and street-address data and are private to the authenticated account. Profile updates do not permit changing the account email. Dashboard endpoints are read-only aggregates over current persisted records. `awaiting_payment` is shown as an order status only and must not be interpreted as paid, revenue, or fulfillment authorization. Storefront profiles do not provide product uploads or media storage; URLs must point to a separately managed public asset.
 
-Rider/driver assignment, rider-specific accounts, live location, delivery SLAs, and operational dashboards do not yet have routes. They remain in the deferred operations milestone until dispatch and proof-of-delivery policies are approved.
+Rider/driver applications, admin activation, manual shipment assignment, assignment acceptance, role-scoped status updates and aggregate operations dashboards are implemented. Live location, dispatch-provider automation, service-level promises, and proof authenticity/storage remain separate integrations or policy decisions. Proof references are recorded as supplied and are not independently verified by these routes.
 
 ## Pricing and booking example
 

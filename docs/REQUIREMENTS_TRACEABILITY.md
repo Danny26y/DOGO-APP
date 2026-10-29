@@ -9,7 +9,7 @@ Status meanings: **Planned** = documented but not implemented; **Partial** = onl
 | §9.2 | Public storefront catalog | P2 | Partial | `GET /api/v1/marketplace/products` | publication/admin review; no checkout |
 | §9.2, §9.4 | Merchant/B2B dispatch booking | P1 | Partial | `POST /api/v1/shipments` | quote-backed manual booking; dispatch integration remains |
 | §9.4 | CSV bulk booking up to 500 parcels | P1 | Partial | `POST /api/v1/shipments/bulk` | 500-row and 2 MB caps; per-row outcomes; broader CSV tests remain |
-| §9.2, §9.4 | Shipment/fleet status visibility | P1 | Partial | shipment list and status API | event updates; no GPS/rider system |
+| §9.2–9.4 | Shipment/rider/driver status and assignment | P1 | Partial | `/api/v1/delivery/*`, `/api/v1/admin/shipments/{id}/assignments`, shipment status API | applications/approval, manual assignments, agent acceptance and role-scoped status events; no GPS provider or automated dispatch |
 | §9.2 | Merchant product catalog, storefront and stock | P2 | Partial | `/api/v1/merchant/products`, `/api/v1/merchant/store-profile`, `/api/v1/marketplace/stores/{slug}`, inventory route | merchant storefront profile and public product page added; image hosting and approval flow remain |
 | §9.2 | Cart and order records | P2 | Partial | `/api/v1/cart`, `POST/GET /api/v1/orders` | snapshots prices and customer-selected delivery address; idempotent create; no payment or stock reservation |
 | §9.2 | Customer profile and saved delivery addresses | P1 | Implemented | `/api/v1/users/me`, `/api/v1/customers/me/addresses` | caller-scoped CRUD, default address selection, and audit events; email change/recovery remains |
@@ -21,8 +21,8 @@ Status meanings: **Planned** = documented but not implemented; **Partial** = onl
 | §9.6 | Foundation, identity and RBAC | P0 | Partial | auth/organizations/customers | access/refresh rotation, user profile, address ownership, organization profile and owner-managed member roles/removal; password recovery, invitation delivery and broader RBAC remain |
 | User request §§4,7 | Tenant isolation and secure auth | P0 | Partial | core/auth/organizations | auth tests pass; resource-specific tenant checks remain |
 | User request §§8,12 | Versioned API, OpenAPI, containers, CI | P0 | Partial | repository | OpenAPI, Docker/Compose, CI config exist; CI tests and Ruff pass locally; Docker engine and GitHub Actions run status were inaccessible from this workspace |
-| §9.2–9.4 | Rider/driver accounts, dispatch and assignment | Deferred/Blocked | Blocked | no rider/driver routes yet | requires approved assignment, proof-of-delivery, GPS and operational responsibility rules |
+| §9.2–9.4 | Rider/driver accounts, dispatch and assignment | P1 | Partial | `/api/v1/delivery/*`, `/api/v1/admin/delivery/*` | agent applications, admin activation, manual assignment, progress events and operations dashboard; licensing verification and external dispatch integration remain |
 | §9.2 | Hailing, drones, warehouse robotics | Deferred | Deferred | future | outside Web MVP |
-| §9.2, §9.4 | Live GPS, OTP POD, automated dispatch | Deferred/Blocked | Blocked | dispatch integrations | operational process/provider decision |
+| §9.2, §9.4 | Live GPS, proof verification/storage, automated dispatch | Deferred/Blocked | Blocked | dispatch/location/proof adapters | status and proof references are recorded; live location, evidence verification/storage and external provider depend on policy/provider decisions |
 
 Extend entries with concrete routes, migrations, test names/results, and dependencies as implementation proceeds. Distinguish source requirements from engineering recommendations.

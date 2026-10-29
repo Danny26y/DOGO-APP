@@ -12,9 +12,13 @@ Python 3.12+, FastAPI, Pydantic, SQLAlchemy 2, Alembic, PostgreSQL, Pytest, Dock
 
 - `core`: settings, security primitives, request IDs, error mapping.
 - `db`: engine, session lifecycle, declarative base, migrations.
-- `modules/auth`: registration, login, token lifecycle.
-- `modules/organizations`: organizations, memberships, tenant policies.
-- Planned: `shipments`, `pricing`, `dispatch`, `marketplace`, `inventory`, `orders`, `payments`, `invoices`, `verification`.
+- `modules/auth`: registration, login, profile, token lifecycle, organizations and memberships.
+- `modules/customers`: customer address book and customer dashboard.
+- `modules/delivery`: rider/driver profiles, manual shipment assignments, role-scoped progress and operations summaries.
+- `modules/shipments`, `pricing`: booking, tracking, status transitions and configurable rate rules.
+- `modules/marketplace`, `orders`: storefront, merchant catalog/inventory, carts and pending checkout records.
+- `modules/dashboards`, `audit`: read-only role-scoped summaries and append-only audit history.
+- Later modules: `payments`, `invoices`, `verification`; provider contracts live in `integrations` until approved implementations are selected.
 - `api`: versioned router composition and shared dependencies.
 - `integrations`: provider adapters; no provider is active until configured and verified.
 
@@ -26,7 +30,7 @@ Users act through organization memberships. Tenant resources carry an organizati
 
 ## Integration boundaries
 
-Payment adapters support trusted verification only after approval. Webhooks must validate signatures and process idempotently. Do not implement custodial wallets, escrow, crypto custody, or payouts without approved design and compliance review. Dispatch/GPS availability is not assumed; record statuses only when an authorized operator or configured system supplies them.
+Provider-independent manual delivery assignments and status events are implemented. External dispatch adapters, live GPS, SLAs and proof verification/storage remain separate integrations. Payment adapters must verify signed provider events and process idempotently before marking an order paid. Do not implement custodial wallets, escrow, crypto custody, or payouts without approved design and compliance review.
 
 ## Initial data model direction
 

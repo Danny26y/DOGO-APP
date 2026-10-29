@@ -15,7 +15,9 @@ from app.core.config import get_settings
 from app.db.session import get_db
 from app.modules.audit.service import record_audit
 from app.modules.auth.models import OrganizationMembership, User
+from app.modules.delivery.models import ShipmentAssignment
 from app.modules.pricing.models import PricingQuote
+from app.modules.shipments.lifecycle import TRANSITIONS
 from app.modules.shipments.models import Shipment, ShipmentEvent
 from app.modules.shipments.schemas import (
     PublicTrackingResponse,
@@ -25,16 +27,6 @@ from app.modules.shipments.schemas import (
 )
 
 router = APIRouter()
-TRANSITIONS = {
-    "requested": {"pickup_scheduled", "cancelled", "exception"},
-    "pickup_scheduled": {"picked_up", "cancelled", "exception"},
-    "picked_up": {"in_transit", "exception"},
-    "in_transit": {"out_for_delivery", "exception"},
-    "out_for_delivery": {"delivered", "exception"},
-    "exception": {"in_transit", "cancelled"},
-    "delivered": set(),
-    "cancelled": set(),
-}
 
 
 def is_platform_admin(user: User) -> bool:
@@ -150,6 +142,12 @@ def update_status(shipment_id: str, payload: ShipmentStatusUpdate, user: User = 
     if payload.status == "delivered" and (not payload.proof_method or not payload.proof_reference):
         raise HTTPException(status_code=422, detail="Proof method and reference are required for delivery completion")
     shipment.status = payload.status
+    if payload.status in {"delivered", "cancelled"}:
+        final_assignment_status = "completed" if payload.status == "delivered" else "cancelled"
+        db.query(ShipmentAssignment).filter(ShipmentAssignment.shipment_id == shipment.id, ShipmentAssignment.is_current.is_(True)).update(
+            {ShipmentAssignment.status: final_assignment_status, ShipmentAssignment.is_current: False},
+            synchronize_session=False,
+        )
     event = ShipmentEvent(shipment_id=shipment.id, status=payload.status, note=payload.note, proof_method=payload.proof_method, proof_reference=payload.proof_reference, created_by_user_id=user.id)
     db.add(event)
     record_audit(db, actor_user_id=user.id, action="shipment.status_changed", resource_type="shipment", resource_id=shipment.id, organization_id=shipment.organization_id, details={"status": payload.status, "proof_method": payload.proof_method})
