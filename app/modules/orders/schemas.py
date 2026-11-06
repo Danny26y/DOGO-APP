@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class CartItemInput(BaseModel):
@@ -23,6 +23,18 @@ class CartResponse(BaseModel):
 
 class CreateOrderRequest(BaseModel):
     delivery_address_id: str
+
+
+class CancelOrderRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=300)
+
+    @field_validator("reason")
+    @classmethod
+    def require_nonblank_reason(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("A cancellation reason is required")
+        return value
 
 
 class DeliveryAddressSnapshot(BaseModel):
@@ -57,6 +69,8 @@ class OrderResponse(BaseModel):
     subtotal_minor: int
     delivery_address_id: str | None
     delivery_address_snapshot: DeliveryAddressSnapshot | None
+    cancellation_reason: str | None
+    cancelled_at: datetime | None
     created_at: datetime
     items: list[OrderItemResponse]
 

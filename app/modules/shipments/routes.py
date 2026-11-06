@@ -144,10 +144,17 @@ def update_status(shipment_id: str, payload: ShipmentStatusUpdate, user: User = 
     shipment.status = payload.status
     if payload.status in {"delivered", "cancelled"}:
         final_assignment_status = "completed" if payload.status == "delivered" else "cancelled"
-        db.query(ShipmentAssignment).filter(ShipmentAssignment.shipment_id == shipment.id, ShipmentAssignment.is_current.is_(True)).update(
-            {ShipmentAssignment.status: final_assignment_status, ShipmentAssignment.is_current: False},
-            synchronize_session=False,
+        assignments = db.scalars(
+            select(ShipmentAssignment)
+            .options(selectinload(ShipmentAssignment.delivery_agent))
+            .where(ShipmentAssignment.shipment_id == shipment.id, ShipmentAssignment.is_current.is_(True))
+            .with_for_update()
         )
+        for assignment in assignments:
+            assignment.status = final_assignment_status
+            assignment.is_current = False
+            if assignment.delivery_agent.status == "active":
+                assignment.delivery_agent.availability_status = "online"
     event = ShipmentEvent(shipment_id=shipment.id, status=payload.status, note=payload.note, proof_method=payload.proof_method, proof_reference=payload.proof_reference, created_by_user_id=user.id)
     db.add(event)
     record_audit(db, actor_user_id=user.id, action="shipment.status_changed", resource_type="shipment", resource_id=shipment.id, organization_id=shipment.organization_id, details={"status": payload.status, "proof_method": payload.proof_method})

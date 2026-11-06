@@ -14,6 +14,8 @@ Base path: `/api/v1`. OpenAPI is exposed by FastAPI at `/openapi.json`; interact
 | `GET/POST /customers/me/addresses` | Read/create saved delivery addresses | Authenticated | Address book belongs to caller; first address becomes default |
 | `PATCH/DELETE /customers/me/addresses/{id}` | Update/delete saved address | Authenticated | Tenant-scoped; deleting default selects a remaining address |
 | `GET /customers/me/dashboard` | Customer dashboard summary | Authenticated | Order counts by current order status and saved-address count; no financial claims |
+| `GET /customers/me/verification-terms` | Read active verification terms and privacy policy versions | Authenticated | Returns the configured version/URLs and whether the caller accepted the current versions; reports unconfigured until approved documents are published and configured |
+| `POST /customers/me/verification-terms/accept` | Record terms acceptance and privacy-policy acknowledgement | Authenticated customer | Requires both explicit acknowledgements and exact active document versions; acceptance is timestamped and audited; returns 503 until versions/URLs are configured |
 | `GET/POST /organizations` | List/create organization | Authenticated | Implemented; caller memberships; creator is owner |
 | `PATCH /organizations/{id}` | Rename organization | Owner/admin | Organization metadata only; auditable |
 | `GET/POST /organizations/{id}/members` | List/add organization members | Owner manages; owner/admin reads | Adds an existing active account; roles are organization-scoped |
@@ -36,16 +38,18 @@ Base path: `/api/v1`. OpenAPI is exposed by FastAPI at `/openapi.json`; interact
 | `GET /admin/products/review-queue` | List unpublished catalog items | Platform admin allowlist | Paged oldest-first review queue; publish with the route above |
 | `GET /cart`, `PUT /cart/items`, `DELETE /cart/items/{product_id}` | Read/edit customer cart | Authenticated customer | Cart belongs to caller; only published products can be added |
 | `POST /orders`, `GET /orders` | Create pending order/history | Authenticated customer | Requires `Idempotency-Key` and caller-owned `delivery_address_id`; snapshots item prices and selected address; stays `awaiting_payment` |
+| `POST /orders/{id}/cancel` | Cancel an order | Owning customer | Requires a nonblank reason; only unpaid `awaiting_payment` orders can be cancelled; no cancellation fee is applied |
 | `GET /merchant/orders` | Merchant order view | Merchant owner | Only that merchant's line items and subtotal are returned |
 | `GET /marketplace/stores/{storefront_slug}` | Public merchant storefront | Public | Store profile and paged published, in-stock products |
 | `GET /admin/dashboard/summary` | Platform dashboard summary | Platform admin email allowlist | User, organization, product, order and shipment counts; excludes money, live GPS and dispatch forecasts |
 | `POST /delivery/agents/apply`, `GET /delivery/me` | Apply for/list rider or driver profile | Authenticated user | Applications start pending; platform admin activation required |
 | `GET /delivery/me/assignments`, `GET /delivery/me/dashboard` | Read agent assignments and summary | Active rider/driver | Caller-owned assignments; dashboard accepts optional `agent_type` filter |
+| `PATCH /delivery/me/availability` | Set rider/driver availability | Active rider/driver | Agent selects `online` or `offline`; new profiles start offline; resolve or decline assignment offers before going offline |
 | `PATCH /delivery/me/assignments/{id}` | Accept/decline an assignment | Assigned active rider/driver | Declines return the work to dispatch; response note is recorded |
 | `POST /delivery/me/assignments/{id}/events` | Record shipment progress | Accepted, active assignment | Role-scoped status transitions; delivery requires proof method/reference to be recorded |
 | `GET /admin/delivery/agents`, `PATCH /admin/delivery/agents/{id}` | Review/activate/suspend delivery agents | Platform admin allowlist | Suspending an agent cancels their current assignments |
 | `POST /admin/shipments/{id}/assignments` | Assign or reassign rider/driver | Platform admin allowlist | One current assignment per agent type per shipment; manual dispatch |
-| `GET /admin/operations/dashboard` | Operations dashboard summary | Platform admin allowlist | Counts agents, assignments and shipment statuses; excludes live location and forecasts |
+| `GET /admin/operations/dashboard` | Operations dashboard summary | Platform admin allowlist | Counts agents by approval and availability, assignments and shipment statuses; excludes live location and forecasts |
 | `POST /orders/{id}/fulfill` | Fulfill paid order | Owning merchant | Not implemented; requires verified payment workflow |
 | `POST /payments/initialize`, `POST /webhooks/{provider}` | Payment flow | Authenticated/provider signature | Sandbox and deduplicated trusted events |
 | `GET /invoices` | List invoices | Organization member | Tenant-scoped |
@@ -59,7 +63,9 @@ Register/login return a short-lived access token and an opaque refresh token. `P
 
 Customer address responses include recipient and street-address data and are private to the authenticated account. Profile updates do not permit changing the account email. Dashboard endpoints are read-only aggregates over current persisted records. `awaiting_payment` is shown as an order status only and must not be interpreted as paid, revenue, or fulfillment authorization. Storefront profiles do not provide product uploads or media storage; URLs must point to a separately managed public asset.
 
-Rider/driver applications, admin activation, manual shipment assignment, assignment acceptance, role-scoped status updates and aggregate operations dashboards are implemented. Live location, dispatch-provider automation, service-level promises, and proof authenticity/storage remain separate integrations or policy decisions. Proof references are recorded as supplied and are not independently verified by these routes.
+Customer verification terms acceptance stores the active terms and privacy-policy version pair with an acceptance timestamp. The endpoints remain unconfigured until DOGO publishes and approves both documents, then sets `CUSTOMER_VERIFICATION_TERMS_VERSION`, `CUSTOMER_VERIFICATION_TERMS_URL`, `PRIVACY_POLICY_VERSION`, and `PRIVACY_POLICY_URL`. This records acceptance but does not perform identity checks or require acceptance for other API operations. Deletion and retention behavior for these records still needs a policy decision.
+
+Rider/driver applications, admin activation, online/offline availability, manual assignment to online agents, assignment acceptance, role-scoped status updates and aggregate operations dashboards are implemented. Live location, dispatch-provider automation, service-level promises, document verification, and proof authenticity/storage remain separate integrations or policy decisions. Proof references are recorded as supplied and are not independently verified by these routes.
 
 ## Pricing and booking example
 
@@ -69,7 +75,7 @@ An illustrative platform-admin rule is `{"origin_zone":"ibadan","destination_zon
 
 Merchant product creation accepts an `organization_id`, category ID, title, description, `price_minor`, optional dimensions/weight, currency, and `initial_stock`. Initial stock is recorded as an inventory movement. New products are private drafts; only a platform administrator can publish them after review. Stock changes use signed `quantity_delta` values and a required reason, with a conflict response if the change would make stock negative. Public catalog results include only published items with stock available.
 
-Cart `PUT` sets a product quantity rather than incrementing it. `POST /orders` requires a saved address owned by the customer, snapshots the current cart, prices, and address, returns `awaiting_payment` / `pending`, and replays the same order for a repeated idempotency key only when the delivery address matches. It does not charge or reserve inventory. Do not present this order as paid or fulfilled. Merchant order views omit delivery PII until the verified payment and fulfillment contract is implemented.
+Cart `PUT` sets a product quantity rather than incrementing it. `POST /orders` requires a saved address owned by the customer, snapshots the current cart, prices, and address, returns `awaiting_payment` / `pending`, and replays the same order for a repeated idempotency key only when the delivery address matches. It does not charge or reserve inventory. Customers can cancel only while the order remains unpaid and awaiting payment; the API records the customer's reason without applying a fee. Paid-order refunds, delivery cancellation windows, and controlled reason categories require approved policy and payment integration. Merchant order views omit delivery PII until the verified payment and fulfillment contract is implemented.
 
 ## Bulk booking CSV
 

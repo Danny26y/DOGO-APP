@@ -268,6 +268,21 @@ def test_product_catalog_and_inventory_are_tenant_scoped(monkeypatch):
     })
     conflict = client.post("/api/v1/orders", headers={**headers, "Idempotency-Key": "order-key-0001"}, json={"delivery_address_id": different_address.json()["id"]})
     assert conflict.status_code == 409
+    cancelled = client.post(
+        f"/api/v1/orders/{order['id']}/cancel",
+        headers=headers,
+        json={"reason": "I selected the wrong delivery address"},
+    )
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+    assert cancelled.json()["cancellation_reason"] == "I selected the wrong delivery address"
+    assert cancelled.json()["cancelled_at"] is not None
+    repeated_cancellation = client.post(
+        f"/api/v1/orders/{order['id']}/cancel",
+        headers=headers,
+        json={"reason": "A later retry must not replace the original reason"},
+    )
+    assert repeated_cancellation.json()["cancellation_reason"] == "I selected the wrong delivery address"
     merchant_orders = client.get(f"/api/v1/merchant/orders?organization_id={organization_id}", headers=headers)
     assert merchant_orders.status_code == 200
     assert merchant_orders.json()[0]["merchant_subtotal_minor"] == 100000
@@ -320,6 +335,52 @@ def test_customer_profile_addresses_and_dashboard():
     other_headers = {"Authorization": f"Bearer {other.json()['access_token']}"}
     assert client.get("/api/v1/customers/me/addresses", headers=other_headers).json() == []
     assert client.patch(f"/api/v1/customers/me/addresses/{first.json()['id']}", headers=other_headers, json={"label": "Stolen"}).status_code == 404
+
+
+def test_customer_verification_terms_consent_is_versioned_and_config_gated(monkeypatch):
+    registration = client.post("/api/v1/auth/register", json={"email": "terms-customer@example.com", "password": "Correct-Horse-55!"})
+    headers = {"Authorization": f"Bearer {registration.json()['access_token']}"}
+    monkeypatch.setattr("app.modules.customers.routes.get_settings", lambda: SimpleNamespace(
+        customer_verification_terms_version="2026-11-v1",
+        customer_verification_terms_url="https://dogo.example/terms/customer-verification/2026-11-v1",
+        privacy_policy_version="2026-11-v1",
+        privacy_policy_url="https://dogo.example/privacy/2026-11-v1",
+    ))
+
+    terms = client.get("/api/v1/customers/me/verification-terms", headers=headers)
+    assert terms.status_code == 200
+    assert terms.json()["configured"] is True
+    assert terms.json()["accepted_current_versions"] is False
+
+    stale = client.post(
+        "/api/v1/customers/me/verification-terms/accept",
+        headers=headers,
+        json={"terms_version": "old", "privacy_policy_version": "2026-11-v1", "terms_accepted": True, "privacy_policy_acknowledged": True},
+    )
+    assert stale.status_code == 409
+
+    acceptance = client.post(
+        "/api/v1/customers/me/verification-terms/accept",
+        headers=headers,
+        json={"terms_version": "2026-11-v1", "privacy_policy_version": "2026-11-v1", "terms_accepted": True, "privacy_policy_acknowledged": True},
+    )
+    assert acceptance.status_code == 200
+    assert acceptance.json()["accepted_current_versions"] is True
+    assert acceptance.json()["accepted_at"] is not None
+    assert client.get("/api/v1/customers/me/verification-terms", headers=headers).json()["accepted_current_versions"] is True
+
+
+def test_customer_verification_terms_are_disabled_until_configured(monkeypatch):
+    registration = client.post("/api/v1/auth/register", json={"email": "terms-unconfigured@example.com", "password": "Correct-Horse-55!"})
+    headers = {"Authorization": f"Bearer {registration.json()['access_token']}"}
+    monkeypatch.setattr("app.modules.customers.routes.get_settings", lambda: SimpleNamespace())
+    assert client.get("/api/v1/customers/me/verification-terms", headers=headers).json()["configured"] is False
+    response = client.post(
+        "/api/v1/customers/me/verification-terms/accept",
+        headers=headers,
+        json={"terms_version": "draft", "privacy_policy_version": "draft", "terms_accepted": True, "privacy_policy_acknowledged": True},
+    )
+    assert response.status_code == 503
 
 
 def test_store_profile_storefront_and_dashboard(monkeypatch):
@@ -402,8 +463,33 @@ def test_driver_and_rider_assignment_workflow(monkeypatch):
         assert application.json()["status"] == "pending"
         approved = client.patch(f"/api/v1/admin/delivery/agents/{application.json()['id']}", headers=admin_headers, json={"status": "active"})
         assert approved.status_code == 200
+        online = client.patch(
+            "/api/v1/delivery/me/availability",
+            headers=headers,
+            json={"agent_type": agent_type, "availability_status": "online"},
+        )
+        assert online.status_code == 200
         agent_headers[agent_type] = headers
         agent_ids[agent_type] = application.json()["id"]
+
+    offline = client.patch(
+        "/api/v1/delivery/me/availability",
+        headers=agent_headers["driver"],
+        json={"agent_type": "driver", "availability_status": "offline"},
+    )
+    assert offline.status_code == 200
+    unavailable_assignment = client.post(
+        f"/api/v1/admin/shipments/{shipment.json()['id']}/assignments",
+        headers=admin_headers,
+        json={"delivery_agent_id": agent_ids["driver"]},
+    )
+    assert unavailable_assignment.status_code == 409
+    back_online = client.patch(
+        "/api/v1/delivery/me/availability",
+        headers=agent_headers["driver"],
+        json={"agent_type": "driver", "availability_status": "online"},
+    )
+    assert back_online.status_code == 200
 
     assignments = {}
     for agent_type in ("driver", "rider"):
@@ -412,6 +498,12 @@ def test_driver_and_rider_assignment_workflow(monkeypatch):
         assignments[agent_type] = assigned.json()["id"]
         accepted = client.patch(f"/api/v1/delivery/me/assignments/{assigned.json()['id']}", headers=agent_headers[agent_type], json={"status": "accepted"})
         assert accepted.status_code == 200
+        cannot_go_offline = client.patch(
+            "/api/v1/delivery/me/availability",
+            headers=agent_headers[agent_type],
+            json={"agent_type": agent_type, "availability_status": "offline"},
+        )
+        assert cannot_go_offline.status_code == 409
 
     forbidden = client.post(f"/api/v1/delivery/me/assignments/{assignments['rider']}/events", headers=agent_headers["rider"], json={"status": "in_transit"})
     assert forbidden.status_code == 403
@@ -426,6 +518,7 @@ def test_driver_and_rider_assignment_workflow(monkeypatch):
     assert delivered.status_code == 200
     assert delivered.json()["status"] == "completed"
     assert delivered.json()["is_current"] is False
+    assert client.get("/api/v1/delivery/me", headers=agent_headers["driver"]).json()[0]["availability_status"] == "online"
     dashboard = client.get("/api/v1/admin/operations/dashboard", headers=admin_headers)
     assert dashboard.status_code == 200
     assert dashboard.json()["shipments_by_status"]["delivered"] >= 1

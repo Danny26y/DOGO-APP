@@ -13,6 +13,7 @@ from app.modules.auth.models import User
 from app.modules.delivery.models import DeliveryAgent, ShipmentAssignment
 from app.modules.delivery.schemas import (
     AgentApplication,
+    AgentAvailabilityUpdate,
     AgentDashboardResponse,
     AgentStatusUpdate,
     AssignmentCreate,
@@ -46,6 +47,7 @@ def agent_response(agent: DeliveryAgent) -> DeliveryAgentResponse:
         phone=agent.user.phone,
         agent_type=agent.agent_type,
         status=agent.status,
+        availability_status=agent.availability_status,
         created_at=agent.created_at,
     )
 
@@ -138,6 +140,40 @@ def delivery_agent_dashboard(agent_type: str | None = Query(default=None, patter
     return AgentDashboardResponse(agent=agent_response(agent), current_assignment_count=len(response_assignments), assignments=response_assignments)
 
 
+@router.patch("/delivery/me/availability", response_model=DeliveryAgentResponse)
+def update_my_availability(
+    payload: AgentAvailabilityUpdate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    agent = db.scalar(
+        select(DeliveryAgent)
+        .where(
+            DeliveryAgent.user_id == user.id,
+            DeliveryAgent.agent_type == payload.agent_type,
+            DeliveryAgent.status == "active",
+        )
+        .with_for_update()
+    )
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Active delivery profile not found")
+    if payload.availability_status == "offline" and agent.availability_status == "busy":
+        raise HTTPException(status_code=409, detail="Resolve or decline current assignments before going offline")
+    if payload.availability_status == "online" and agent.availability_status == "busy":
+        raise HTTPException(status_code=409, detail="Availability changes after the current assignment is resolved")
+    agent.availability_status = payload.availability_status
+    record_audit(
+        db,
+        actor_user_id=user.id,
+        action=f"delivery_agent.availability_{payload.availability_status}",
+        resource_type="delivery_agent",
+        resource_id=agent.id,
+        details={"agent_type": agent.agent_type},
+    )
+    db.commit()
+    return agent_response(agent)
+
+
 @router.patch("/delivery/me/assignments/{assignment_id}", response_model=AssignmentResponse)
 def respond_to_assignment(
     assignment_id: str,
@@ -155,6 +191,9 @@ def respond_to_assignment(
     assignment.responded_at = datetime.now(UTC)
     if payload.status == "declined":
         assignment.is_current = False
+        assignment.delivery_agent.availability_status = "online"
+    else:
+        assignment.delivery_agent.availability_status = "busy"
     record_audit(db, actor_user_id=user.id, action=f"shipment.assignment_{payload.status}", resource_type="shipment_assignment", resource_id=assignment.id, organization_id=assignment.shipment.organization_id, details={"agent_type": assignment.agent_type, "note_present": payload.note is not None})
     db.commit()
     return assignment_response(get_assignment(db, assignment.id))
@@ -174,7 +213,7 @@ def assign_delivery_agent(
     if shipment.status in {"delivered", "cancelled"}:
         raise HTTPException(status_code=409, detail="A completed shipment cannot be assigned")
     agent = db.scalar(select(DeliveryAgent).where(DeliveryAgent.id == payload.delivery_agent_id).with_for_update())
-    if agent is None or agent.status != "active":
+    if agent is None:
         raise HTTPException(status_code=409, detail="Delivery agent is unavailable")
     existing = db.scalar(
         select(ShipmentAssignment)
@@ -182,10 +221,13 @@ def assign_delivery_agent(
         .with_for_update()
     )
     if existing is not None and existing.delivery_agent_id == agent.id:
-        return assignment_response(get_assignment(db, existing.id))
+        return assignment_response(existing)
+    if agent.status != "active" or agent.availability_status != "online":
+        raise HTTPException(status_code=409, detail="Delivery agent must be active and online")
     if existing is not None:
         existing.status = "cancelled"
         existing.is_current = False
+        existing.delivery_agent.availability_status = "online"
     assignment = ShipmentAssignment(
         shipment_id=shipment.id,
         delivery_agent_id=agent.id,
@@ -194,6 +236,7 @@ def assign_delivery_agent(
         assigned_by_user_id=user.id,
     )
     db.add(assignment)
+    agent.availability_status = "busy"
     db.flush()
     record_audit(db, actor_user_id=user.id, action="shipment.agent_assigned", resource_type="shipment_assignment", resource_id=assignment.id, organization_id=shipment.organization_id, details={"agent_type": agent.agent_type})
     db.commit()
@@ -227,6 +270,7 @@ def update_delivery_agent(agent_id: str, payload: AgentStatusUpdate, user: User 
         raise HTTPException(status_code=404, detail="Delivery agent not found")
     agent.status = payload.status
     if payload.status == "suspended":
+        agent.availability_status = "offline"
         current_assignments = db.scalars(select(ShipmentAssignment).where(ShipmentAssignment.delivery_agent_id == agent.id, ShipmentAssignment.is_current.is_(True)))
         for assignment in current_assignments:
             assignment.status = "cancelled"
@@ -268,16 +312,17 @@ def create_delivery_event(
         )
     )
     if payload.status == "delivered":
-        assignment.status = "completed"
-        assignment.is_current = False
-        db.query(ShipmentAssignment).filter(
-            ShipmentAssignment.shipment_id == shipment.id,
-            ShipmentAssignment.id != assignment.id,
-            ShipmentAssignment.is_current.is_(True),
-        ).update(
-            {ShipmentAssignment.status: "completed", ShipmentAssignment.is_current: False},
-            synchronize_session=False,
+        current_assignments = db.scalars(
+            select(ShipmentAssignment)
+            .options(joinedload(ShipmentAssignment.delivery_agent))
+            .where(ShipmentAssignment.shipment_id == shipment.id, ShipmentAssignment.is_current.is_(True))
+            .with_for_update()
         )
+        for current_assignment in current_assignments:
+            current_assignment.status = "completed"
+            current_assignment.is_current = False
+            if current_assignment.delivery_agent.status == "active":
+                current_assignment.delivery_agent.availability_status = "online"
     record_audit(db, actor_user_id=user.id, action="shipment.status_changed_by_agent", resource_type="shipment", resource_id=shipment.id, organization_id=shipment.organization_id, details={"status": payload.status, "agent_type": assignment.agent_type, "proof_method": payload.proof_method})
     db.commit()
     return assignment_response(get_assignment(db, assignment.id))
@@ -287,10 +332,12 @@ def create_delivery_event(
 def operations_dashboard(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     require_platform_admin(user)
     agent_rows = db.execute(select(DeliveryAgent.agent_type, DeliveryAgent.status, func.count(DeliveryAgent.id)).group_by(DeliveryAgent.agent_type, DeliveryAgent.status)).all()
+    availability_rows = db.execute(select(DeliveryAgent.agent_type, DeliveryAgent.availability_status, func.count(DeliveryAgent.id)).group_by(DeliveryAgent.agent_type, DeliveryAgent.availability_status)).all()
     assignment_rows = db.execute(select(ShipmentAssignment.status, func.count(ShipmentAssignment.id)).where(ShipmentAssignment.is_current.is_(True)).group_by(ShipmentAssignment.status)).all()
     shipment_rows = db.execute(select(Shipment.status, func.count(Shipment.id)).group_by(Shipment.status)).all()
     return DeliveryOperationsDashboardResponse(
         agents_by_type_and_status={f"{agent_type}:{status}": count for agent_type, status, count in agent_rows},
+        agents_by_type_and_availability={f"{agent_type}:{availability}": count for agent_type, availability, count in availability_rows},
         current_assignments_by_status={status: count for status, count in assignment_rows},
         shipments_by_status={status: count for status, count in shipment_rows},
     )

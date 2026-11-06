@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     jwt_refresh_token_days: int = 30
     cors_origins: list[str] = ["http://localhost:3000", "http://localhost:5173"]
     platform_admin_emails: str = ""
+    customer_verification_terms_version: str = ""
+    customer_verification_terms_url: str = ""
+    privacy_policy_version: str = ""
+    privacy_policy_url: str = ""
 
     @property
     def platform_admin_email_set(self) -> set[str]:

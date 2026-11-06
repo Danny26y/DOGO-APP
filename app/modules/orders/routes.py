@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -11,6 +13,7 @@ from app.modules.customers.models import CustomerAddress
 from app.modules.marketplace.models import Product
 from app.modules.orders.models import Cart, CartItem, Order, OrderItem
 from app.modules.orders.schemas import (
+    CancelOrderRequest,
     CartItemInput,
     CartResponse,
     CreateOrderRequest,
@@ -141,6 +144,41 @@ def create_order(
 @router.get("/orders", response_model=list[OrderResponse])
 def list_customer_orders(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return list(db.scalars(select(Order).options(selectinload(Order.items)).where(Order.customer_user_id == user.id).order_by(Order.created_at.desc()).limit(100)))
+
+
+@router.post("/orders/{order_id}/cancel", response_model=OrderResponse)
+def cancel_unpaid_order(
+    order_id: str,
+    payload: CancelOrderRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    order = db.scalar(
+        select(Order)
+        .options(selectinload(Order.items))
+        .where(Order.id == order_id, Order.customer_user_id == user.id)
+        .with_for_update()
+    )
+    if order is None:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.status == "cancelled":
+        return order
+    if order.status != "awaiting_payment" or order.payment_status != "pending":
+        raise HTTPException(status_code=409, detail="Only unpaid orders awaiting payment can be cancelled")
+    order.status = "cancelled"
+    order.cancellation_reason = payload.reason
+    order.cancelled_at = datetime.now(UTC)
+    record_audit(
+        db,
+        actor_user_id=user.id,
+        action="order.cancelled_by_customer",
+        resource_type="order",
+        resource_id=order.id,
+        details={"status": order.status, "reason_present": True},
+    )
+    db.commit()
+    db.refresh(order)
+    return db.scalar(select(Order).options(selectinload(Order.items)).where(Order.id == order.id))
 
 
 @router.get("/merchant/orders", response_model=list[MerchantOrderResponse])

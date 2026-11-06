@@ -41,6 +41,8 @@ class Order(Base):
     subtotal_minor: Mapped[int] = mapped_column(Integer, nullable=False)
     delivery_address_id: Mapped[str | None] = mapped_column(String(36))
     delivery_address_snapshot: Mapped[dict | None] = mapped_column(JSON)
+    cancellation_reason: Mapped[str | None] = mapped_column(String(300))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
     items: Mapped[list["OrderItem"]] = relationship(back_populates="order", cascade="all, delete-orphan")
 

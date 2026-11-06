@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -46,3 +47,20 @@ class CustomerDashboardResponse(BaseModel):
     order_count: int
     orders_by_status: dict[str, int]
     saved_address_count: int
+
+
+class VerificationTermsResponse(BaseModel):
+    configured: bool
+    terms_version: str | None = None
+    terms_url: str | None = None
+    privacy_policy_version: str | None = None
+    privacy_policy_url: str | None = None
+    accepted_current_versions: bool = False
+    accepted_at: datetime | None = None
+
+
+class VerificationTermsAcceptance(BaseModel):
+    terms_version: str = Field(min_length=1, max_length=64)
+    privacy_policy_version: str = Field(min_length=1, max_length=64)
+    terms_accepted: Literal[True]
+    privacy_policy_acknowledged: Literal[True]

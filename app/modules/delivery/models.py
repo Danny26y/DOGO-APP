@@ -32,6 +32,7 @@ class DeliveryAgent(Base):
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
     agent_type: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", index=True)
+    availability_status: Mapped[str] = mapped_column(String(16), nullable=False, default="offline", server_default=text("'offline'"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
     user: Mapped["User"] = relationship()

@@ -1,21 +1,119 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user
+from app.core.config import get_settings
 from app.db.session import get_db
 from app.modules.audit.service import record_audit
 from app.modules.auth.models import User
-from app.modules.customers.models import CustomerAddress
+from app.modules.customers.models import CustomerAddress, CustomerVerificationConsent
 from app.modules.customers.schemas import (
     CustomerAddressCreate,
     CustomerAddressResponse,
     CustomerAddressUpdate,
     CustomerDashboardResponse,
+    VerificationTermsAcceptance,
+    VerificationTermsResponse,
 )
 from app.modules.orders.models import Order
 
 router = APIRouter()
+
+
+def active_verification_terms() -> tuple[str, str, str, str] | None:
+    settings = get_settings()
+    values = (
+        getattr(settings, "customer_verification_terms_version", "").strip(),
+        getattr(settings, "customer_verification_terms_url", "").strip(),
+        getattr(settings, "privacy_policy_version", "").strip(),
+        getattr(settings, "privacy_policy_url", "").strip(),
+    )
+    return values if all(values) else None
+
+
+@router.get("/customers/me/verification-terms", response_model=VerificationTermsResponse)
+def get_verification_terms(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    configured = active_verification_terms()
+    if configured is None:
+        return VerificationTermsResponse(configured=False)
+    terms_version, terms_url, privacy_version, privacy_url = configured
+    consent = db.scalar(
+        select(CustomerVerificationConsent).where(
+            CustomerVerificationConsent.user_id == user.id,
+            CustomerVerificationConsent.terms_version == terms_version,
+            CustomerVerificationConsent.privacy_policy_version == privacy_version,
+        )
+    )
+    return VerificationTermsResponse(
+        configured=True,
+        terms_version=terms_version,
+        terms_url=terms_url,
+        privacy_policy_version=privacy_version,
+        privacy_policy_url=privacy_url,
+        accepted_current_versions=consent is not None,
+        accepted_at=consent.accepted_at if consent else None,
+    )
+
+
+@router.post("/customers/me/verification-terms/accept", response_model=VerificationTermsResponse)
+def accept_verification_terms(
+    payload: VerificationTermsAcceptance,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    configured = active_verification_terms()
+    if configured is None:
+        raise HTTPException(status_code=503, detail="Current verification terms and privacy policy are not configured")
+    terms_version, terms_url, privacy_version, privacy_url = configured
+    if payload.terms_version != terms_version or payload.privacy_policy_version != privacy_version:
+        raise HTTPException(status_code=409, detail="The terms or privacy policy version has changed; reload the current documents")
+    consent = db.scalar(
+        select(CustomerVerificationConsent).where(
+            CustomerVerificationConsent.user_id == user.id,
+            CustomerVerificationConsent.terms_version == terms_version,
+            CustomerVerificationConsent.privacy_policy_version == privacy_version,
+        )
+    )
+    if consent is None:
+        consent = CustomerVerificationConsent(
+            user_id=user.id,
+            terms_version=terms_version,
+            privacy_policy_version=privacy_version,
+        )
+        db.add(consent)
+        try:
+            db.flush()
+            record_audit(
+                db,
+                actor_user_id=user.id,
+                action="customer.verification_terms_accepted",
+                resource_type="customer_verification_consent",
+                resource_id=consent.id,
+                details={"terms_version": terms_version, "privacy_policy_version": privacy_version},
+            )
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            consent = db.scalar(
+                select(CustomerVerificationConsent).where(
+                    CustomerVerificationConsent.user_id == user.id,
+                    CustomerVerificationConsent.terms_version == terms_version,
+                    CustomerVerificationConsent.privacy_policy_version == privacy_version,
+                )
+            )
+            if consent is None:
+                raise HTTPException(status_code=409, detail="Terms acceptance could not be recorded")
+    return VerificationTermsResponse(
+        configured=True,
+        terms_version=terms_version,
+        terms_url=terms_url,
+        privacy_policy_version=privacy_version,
+        privacy_policy_url=privacy_url,
+        accepted_current_versions=True,
+        accepted_at=consent.accepted_at,
+    )
 
 
 @router.get("/customers/me/addresses", response_model=list[CustomerAddressResponse])

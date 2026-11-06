@@ -12,6 +12,11 @@ class AgentStatusUpdate(BaseModel):
     status: Literal["active", "suspended"]
 
 
+class AgentAvailabilityUpdate(BaseModel):
+    agent_type: Literal["rider", "driver"]
+    availability_status: Literal["online", "offline"]
+
+
 class DeliveryAgentResponse(BaseModel):
     id: str
     user_id: str
@@ -20,6 +25,7 @@ class DeliveryAgentResponse(BaseModel):
     phone: str | None
     agent_type: str
     status: str
+    availability_status: str
     created_at: datetime
 
 
@@ -67,5 +73,6 @@ class AgentDashboardResponse(BaseModel):
 
 class DeliveryOperationsDashboardResponse(BaseModel):
     agents_by_type_and_status: dict[str, int]
+    agents_by_type_and_availability: dict[str, int]
     current_assignments_by_status: dict[str, int]
     shipments_by_status: dict[str, int]
