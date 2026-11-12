@@ -1,3 +1,7 @@
+import hashlib
+import hmac
+import secrets
+import smtplib
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -16,14 +20,18 @@ from app.core.security import (
     verify_password,
 )
 from app.db.session import get_db
+from app.integrations.email import send_otp_email
 from app.modules.audit.service import record_audit
 from app.modules.auth.models import (
+    EmailOTP,
     Organization,
     OrganizationMembership,
     RefreshSession,
     User,
 )
 from app.modules.auth.schemas import (
+    EmailOTPRequest,
+    EmailOTPVerify,
     LoginRequest,
     OrganizationCreate,
     OrganizationMemberAdd,
@@ -79,10 +87,62 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
     user = db.scalar(select(User).where(User.email == payload.email.lower()))
     if user is None or not user.is_active or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Email or password is incorrect", headers={"WWW-Authenticate": "Bearer"})
+    if get_settings().email_otp_enabled and not user.email_verified:
+        raise HTTPException(status_code=403, detail="Verify your email before signing in")
     response, _ = token_response(user, db)
     record_audit(db, actor_user_id=user.id, action="auth.login", resource_type="user", resource_id=user.id)
     db.commit()
     return response
+
+
+@router.post("/email-otp/request", status_code=202)
+def request_email_otp(payload: EmailOTPRequest, db: Session = Depends(get_db)):
+    settings = get_settings()
+    if not settings.email_otp_enabled:
+        raise HTTPException(status_code=503, detail="Email verification is not configured")
+    user = db.scalar(select(User).where(User.email == payload.email.lower(), User.is_active.is_(True)))
+    # Same response for unknown and known addresses avoids account enumeration.
+    if user is None or user.email_verified:
+        return {"accepted": True}
+    now = datetime.now(UTC)
+    latest = db.scalar(select(EmailOTP).where(EmailOTP.user_id == user.id).order_by(EmailOTP.created_at.desc()).limit(1))
+    if latest and (latest.created_at.replace(tzinfo=UTC) if latest.created_at.tzinfo is None else latest.created_at) > now - timedelta(seconds=60):
+        return {"accepted": True}
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    code_hash = hmac.new(settings.jwt_secret.encode(), f"{user.id}:{code}".encode(), hashlib.sha256).hexdigest()
+    db.query(EmailOTP).filter(EmailOTP.user_id == user.id, EmailOTP.consumed_at.is_(None)).update({EmailOTP.consumed_at: now}, synchronize_session=False)
+    otp = EmailOTP(user_id=user.id, code_hash=code_hash, expires_at=now + timedelta(minutes=settings.email_otp_ttl_minutes))
+    db.add(otp)
+    db.commit()
+    try:
+        send_otp_email(user.email, code)
+    except (OSError, RuntimeError, smtplib.SMTPException) as exc:
+        otp.consumed_at = now
+        db.commit()
+        raise HTTPException(status_code=503, detail="Email delivery is unavailable") from exc
+    return {"accepted": True}
+
+
+@router.post("/email-otp/verify", status_code=204)
+def verify_email_otp(payload: EmailOTPVerify, db: Session = Depends(get_db)):
+    settings = get_settings()
+    if not settings.email_otp_enabled:
+        raise HTTPException(status_code=503, detail="Email verification is not configured")
+    user = db.scalar(select(User).where(User.email == payload.email.lower(), User.is_active.is_(True)))
+    if user is None:
+        raise HTTPException(status_code=400, detail="Invalid or expired verification code")
+    otp = db.scalar(select(EmailOTP).where(EmailOTP.user_id == user.id, EmailOTP.consumed_at.is_(None)).order_by(EmailOTP.created_at.desc()).with_for_update())
+    if otp is None or otp.attempts >= 5 or (otp.expires_at.replace(tzinfo=UTC) if otp.expires_at.tzinfo is None else otp.expires_at) <= datetime.now(UTC):
+        raise HTTPException(status_code=400, detail="Invalid or expired verification code")
+    otp.attempts += 1
+    expected = hmac.new(settings.jwt_secret.encode(), f"{user.id}:{payload.code}".encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(otp.code_hash, expected):
+        db.commit()
+        raise HTTPException(status_code=400, detail="Invalid or expired verification code")
+    otp.consumed_at = datetime.now(UTC)
+    user.email_verified = True
+    record_audit(db, actor_user_id=user.id, action="auth.email_verified", resource_type="user", resource_id=user.id)
+    db.commit()
 
 
 @router.post("/refresh", response_model=TokenResponse)

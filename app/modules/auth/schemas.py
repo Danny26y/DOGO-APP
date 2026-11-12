@@ -13,6 +13,15 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=128)
 
 
+class EmailOTPRequest(BaseModel):
+    email: EmailStr
+
+
+class EmailOTPVerify(BaseModel):
+    email: EmailStr
+    code: str = Field(pattern="^[0-9]{6}$")
+
+
 class TokenResponse(BaseModel):
     access_token: str
     refresh_token: str

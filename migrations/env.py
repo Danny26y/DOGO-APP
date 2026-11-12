@@ -11,6 +11,7 @@ from app.modules.customers import models as customer_models  # noqa: F401
 from app.modules.delivery import models as delivery_models  # noqa: F401
 from app.modules.marketplace import models as marketplace_models  # noqa: F401
 from app.modules.orders import models as order_models  # noqa: F401
+from app.modules.payments import models as payment_models  # noqa: F401
 from app.modules.pricing import models as pricing_models  # noqa: F401
 from app.modules.shipments import models as shipment_models  # noqa: F401
 

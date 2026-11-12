@@ -20,6 +20,20 @@ class Settings(BaseSettings):
     customer_verification_terms_url: str = ""
     privacy_policy_version: str = ""
     privacy_policy_url: str = ""
+    # Provider credentials are optional until sandbox/live integrations are enabled.
+    paystack_secret_key: str = ""
+    paystack_public_key: str = ""
+    paystack_base_url: str = "https://api.paystack.co"
+    email_otp_enabled: bool = False
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    email_from: str = ""
+    osrm_base_url: str = ""
+    geocoding_base_url: str = ""
+    email_otp_ttl_minutes: int = 10
+    verification_upload_dir: str = "./private_uploads/verification"
 
     @property
     def platform_admin_email_set(self) -> set[str]:

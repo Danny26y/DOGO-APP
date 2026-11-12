@@ -21,3 +21,5 @@ Fake payment and settlement adapters may be instantiated only by tests or a sepa
 ## Unresolved operational integrations
 
 Agent account approval, manual assignment, assignment response, shipment progress, and operations summaries are implemented. External dispatch notifications, location streaming, SLA/ETA computation, identity/license checks, and proof-of-delivery storage/verification need their own approved adapter and policy. Current proof references are audit data, not evidence verified by DOGO.
+
+Provider choices and operational setup are documented in [PROVIDER_WORKFLOWS.md](PROVIDER_WORKFLOWS.md).

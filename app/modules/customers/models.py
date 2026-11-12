@@ -56,3 +56,19 @@ class CustomerVerificationConsent(Base):
     terms_version: Mapped[str] = mapped_column(String(64), nullable=False)
     privacy_policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
     accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
+
+
+class CustomerIdentitySubmission(Base):
+    __tablename__ = "customer_identity_submissions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    document_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    storage_name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    original_filename: Mapped[str] = mapped_column(String(200), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending", index=True)
+    review_note: Mapped[str | None] = mapped_column(String(500))
+    reviewed_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

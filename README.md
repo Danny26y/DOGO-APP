@@ -21,6 +21,7 @@ Copy `.env.example` to `.env`, then run `docker compose up --build`. Compose app
 - [Database](docs/DATABASE.md)
 - [Testing](docs/TESTING.md)
 - [Team workflow](docs/TEAM_WORKFLOW.md)
+- [Selected provider workflows](docs/PROVIDER_WORKFLOWS.md)
 - [Deployment](docs/DEPLOYMENT.md)
 
 This is an MVP foundation, not a production-ready logistics or commerce platform. Payment, dispatch, GPS, KYB document storage, and settlement integrations are not active.

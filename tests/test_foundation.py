@@ -51,6 +51,96 @@ def test_health_endpoints():
     assert client.get("/health/ready").json() == {"status": "ready"}
 
 
+def test_email_otp_verification_is_hashed_sent_and_one_time(monkeypatch):
+    from types import SimpleNamespace
+
+    import app.modules.auth.routes as auth_routes
+
+    email = "otp-review@example.com"
+    client.post("/api/v1/auth/register", json={"email": email, "password": "Correct-Horse-OTP-42!"})
+    sent = {}
+    monkeypatch.setattr(auth_routes, "get_settings", lambda: SimpleNamespace(email_otp_enabled=True, email_otp_ttl_minutes=10, jwt_secret="unit-test-secret", jwt_refresh_token_days=30, jwt_access_token_minutes=15))
+    monkeypatch.setattr(auth_routes, "send_otp_email", lambda recipient, code: sent.update(recipient=recipient, code=code))
+    assert client.post("/api/v1/auth/email-otp/request", json={"email": email}).status_code == 202
+    assert sent["recipient"] == email
+    assert client.post("/api/v1/auth/email-otp/verify", json={"email": email, "code": sent["code"]}).status_code == 204
+    assert client.post("/api/v1/auth/email-otp/verify", json={"email": email, "code": sent["code"]}).status_code == 400
+    assert client.post("/api/v1/auth/login", json={"email": email, "password": "Correct-Horse-OTP-42!"}).status_code == 200
+
+
+def test_customer_identity_submission_admin_review_and_private_download(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    import app.modules.customers.routes as customer_routes
+
+    customer_email = "id-review-customer@example.com"
+    admin_email = "id-review-admin@example.com"
+    customer = client.post("/api/v1/auth/register", json={"email": customer_email, "password": "Correct-Horse-ID-42!"})
+    admin = client.post("/api/v1/auth/register", json={"email": admin_email, "password": "Correct-Horse-Admin-42!"})
+    settings = SimpleNamespace(verification_upload_dir=str(tmp_path), platform_admin_email_set={admin_email})
+    monkeypatch.setattr(customer_routes, "get_settings", lambda: settings)
+    png = b"\x89PNG\r\n\x1a\n" + b"test image data"
+    submitted = client.post("/api/v1/customers/me/identity-submissions?document_type=national_id", headers={"Authorization": f"Bearer {customer.json()['access_token']}", "Content-Type": "image/png", "X-File-Name": "id.png"}, content=png)
+    assert submitted.status_code == 201
+    submission_id = submitted.json()["id"]
+    admin_headers = {"Authorization": f"Bearer {admin.json()['access_token']}"}
+    listed = client.get("/api/v1/admin/identity-submissions", headers=admin_headers)
+    assert listed.status_code == 200
+    assert any(item["id"] == submission_id and item["user_id"] for item in listed.json())
+    downloaded = client.get(f"/api/v1/admin/identity-submissions/{submission_id}/document", headers=admin_headers)
+    assert downloaded.status_code == 200 and downloaded.content == png
+    reviewed = client.patch(f"/api/v1/admin/identity-submissions/{submission_id}", headers=admin_headers, json={"status": "approved", "review_note": "Reviewed"})
+    assert reviewed.status_code == 200 and reviewed.json()["status"] == "approved"
+
+
+def test_paystack_initialize_and_signed_webhook_update_order_idempotently(monkeypatch):
+    import json
+    from datetime import UTC, datetime
+
+    import app.modules.payments.routes as payment_routes
+    from app.integrations.ports import PaymentIntentResult, VerifiedPaymentEvent
+    from app.modules.orders.models import Order
+    from app.modules.payments.models import Payment
+
+    email = "payment-flow@example.com"
+    account = client.post("/api/v1/auth/register", json={"email": email, "password": "Correct-Horse-Pay-42!"})
+    token = account.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    with TestingSession() as session:
+        order = Order(customer_user_id=session.scalar(select(User.id).where(User.email == email)), idempotency_key="order-idempotency-1", currency="NGN", subtotal_minor=350000)
+        session.add(order)
+        session.commit()
+        order_id = order.id
+
+    class FakePaystack:
+        def __init__(self):
+            pass
+
+        def create_intent(self, request, email):
+            return PaymentIntentResult("ps-ref-1", "https://checkout.paystack.test/ref", None)
+
+        def verify_webhook(self, headers, body):
+            data = json.loads(body)["data"]
+            return VerifiedPaymentEvent("charge.success:123", data["reference"], data["metadata"]["order_id"], data["amount"], data["currency"], data["status"], datetime.now(UTC))
+
+    monkeypatch.setattr(payment_routes, "PaystackProvider", FakePaystack)
+    initialized = client.post("/api/v1/payments/initialize", headers=headers, json={"order_id": order_id, "return_url": "http://localhost:3000/checkout/return"})
+    assert initialized.status_code == 201
+    assert initialized.json()["checkout_url"].startswith("https://checkout.paystack.test/")
+    with TestingSession() as session:
+        payment = session.scalar(select(Payment).where(Payment.order_id == order_id))
+        assert payment.status == "pending"
+        reference = payment.provider_reference
+    body = json.dumps({"event": "charge.success", "data": {"id": 123, "reference": reference, "status": "success", "amount": 350000, "currency": "NGN", "metadata": {"order_id": order_id}}}).encode()
+    first = client.post("/api/v1/webhooks/paystack", content=body, headers={"Content-Type": "application/json", "x-paystack-signature": "test"})
+    duplicate = client.post("/api/v1/webhooks/paystack", content=body, headers={"Content-Type": "application/json", "x-paystack-signature": "test"})
+    assert first.status_code == 200 and first.json()["duplicate"] is False
+    assert duplicate.status_code == 200 and duplicate.json()["duplicate"] is True
+    with TestingSession() as session:
+        assert session.get(Order, order_id).payment_status == "paid"
+        assert session.scalar(select(Payment).where(Payment.order_id == order_id)).status == "succeeded"
+
+
 def test_register_login_and_me():
     response = client.post("/api/v1/auth/register", json={"email": "one@example.com", "password": "Correct-Horse-42!"})
     assert response.status_code == 201

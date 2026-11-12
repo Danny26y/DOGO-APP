@@ -85,3 +85,5 @@ Cart `PUT` sets a product quantity rather than incrementing it. `POST /orders` r
 quote_id,origin_zone,destination_zone,delivery_tier,package_weight_kg,pickup_address,destination_address,recipient_name,recipient_phone,package_category
 <quote-id>,ibadan,lagos,standard,2.25,"Pickup address","Delivery address",Ada,+2348000000000,parcel
 ```
+
+See [Selected provider workflows](PROVIDER_WORKFLOWS.md) for Paystack, email OTP, identity submission/review, and OSRM endpoint details.

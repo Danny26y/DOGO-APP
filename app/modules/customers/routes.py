@@ -1,4 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException
+from datetime import UTC, datetime
+from pathlib import Path
+from uuid import uuid4
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -8,7 +14,11 @@ from app.core.config import get_settings
 from app.db.session import get_db
 from app.modules.audit.service import record_audit
 from app.modules.auth.models import User
-from app.modules.customers.models import CustomerAddress, CustomerVerificationConsent
+from app.modules.customers.models import (
+    CustomerAddress,
+    CustomerIdentitySubmission,
+    CustomerVerificationConsent,
+)
 from app.modules.customers.schemas import (
     CustomerAddressCreate,
     CustomerAddressResponse,
@@ -22,6 +32,19 @@ from app.modules.orders.models import Order
 router = APIRouter()
 
 
+class IdentitySubmissionResponse(BaseModel):
+    id: str
+    user_id: str
+    document_type: str
+    status: str
+    created_at: datetime
+
+
+class IdentityReviewRequest(BaseModel):
+    status: str = Field(pattern="^(approved|rejected)$")
+    review_note: str | None = Field(default=None, max_length=500)
+
+
 def active_verification_terms() -> tuple[str, str, str, str] | None:
     settings = get_settings()
     values = (
@@ -31,6 +54,85 @@ def active_verification_terms() -> tuple[str, str, str, str] | None:
         getattr(settings, "privacy_policy_url", "").strip(),
     )
     return values if all(values) else None
+
+
+@router.post("/customers/me/identity-submissions", response_model=IdentitySubmissionResponse, status_code=201)
+async def submit_identity_document(
+    request: Request,
+    document_type: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if document_type not in {"national_id", "passport", "drivers_license", "voters_card"}:
+        raise HTTPException(status_code=422, detail="Unsupported identity document type")
+    allowed = {"application/pdf": ".pdf", "image/jpeg": ".jpg", "image/png": ".png"}
+    content_type = request.headers.get("content-type", "").split(";")[0].strip().lower()
+    if content_type not in allowed:
+        raise HTTPException(status_code=415, detail="Upload a PDF, JPEG, or PNG document")
+    current = db.scalar(select(CustomerIdentitySubmission).where(CustomerIdentitySubmission.user_id == user.id, CustomerIdentitySubmission.status == "pending"))
+    if current:
+        raise HTTPException(status_code=409, detail="An identity submission is already pending review")
+    content = bytearray()
+    async for chunk in request.stream():
+        content.extend(chunk)
+        if len(content) > 5 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="Document must be 5 MB or smaller")
+    if not content:
+        raise HTTPException(status_code=413, detail="Document must be 5 MB or smaller")
+    signatures = {"application/pdf": b"%PDF-", "image/jpeg": b"\xff\xd8\xff", "image/png": b"\x89PNG\r\n\x1a\n"}
+    if not content.startswith(signatures[content_type]):
+        raise HTTPException(status_code=415, detail="File content does not match its declared document type")
+    name = f"{uuid4().hex}{allowed[content_type]}"
+    root = Path(get_settings().verification_upload_dir).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    (root / name).write_bytes(content)
+    filename = Path(request.headers.get("x-file-name", "identity-document")).name[:200]
+    submission = CustomerIdentitySubmission(user_id=user.id, document_type=document_type, storage_name=name, original_filename=filename, content_type=content_type, status="pending")
+    db.add(submission)
+    db.flush()
+    record_audit(db, actor_user_id=user.id, action="customer.identity_submitted", resource_type="customer_identity_submission", resource_id=submission.id, details={"document_type": document_type})
+    db.commit()
+    db.refresh(submission)
+    return submission
+
+
+@router.get("/admin/identity-submissions", response_model=list[IdentitySubmissionResponse])
+def list_identity_submissions(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if user.email.lower() not in get_settings().platform_admin_email_set:
+        raise HTTPException(status_code=403, detail="Platform administrator access is required")
+    return list(db.scalars(select(CustomerIdentitySubmission).order_by(CustomerIdentitySubmission.created_at).limit(200)))
+
+
+@router.get("/admin/identity-submissions/{submission_id}/document")
+def download_identity_document(submission_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if user.email.lower() not in get_settings().platform_admin_email_set:
+        raise HTTPException(status_code=403, detail="Platform administrator access is required")
+    submission = db.get(CustomerIdentitySubmission, submission_id)
+    if submission is None:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    path = Path(get_settings().verification_upload_dir).resolve() / submission.storage_name
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Document file not found")
+    return FileResponse(path, media_type=submission.content_type, filename=submission.original_filename, content_disposition_type="attachment")
+
+
+@router.patch("/admin/identity-submissions/{submission_id}", response_model=IdentitySubmissionResponse)
+def review_identity_submission(submission_id: str, payload: IdentityReviewRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if user.email.lower() not in get_settings().platform_admin_email_set:
+        raise HTTPException(status_code=403, detail="Platform administrator access is required")
+    submission = db.scalar(select(CustomerIdentitySubmission).where(CustomerIdentitySubmission.id == submission_id).with_for_update())
+    if submission is None:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    if submission.status != "pending":
+        raise HTTPException(status_code=409, detail="Submission has already been reviewed")
+    submission.status = payload.status
+    submission.review_note = payload.review_note
+    submission.reviewed_by_user_id = user.id
+    submission.reviewed_at = datetime.now(UTC)
+    record_audit(db, actor_user_id=user.id, action=f"customer.identity_{payload.status}", resource_type="customer_identity_submission", resource_id=submission.id, details={"owner_user_id": submission.user_id})
+    db.commit()
+    db.refresh(submission)
+    return submission
 
 
 @router.get("/customers/me/verification-terms", response_model=VerificationTermsResponse)

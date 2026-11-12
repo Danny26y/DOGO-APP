@@ -21,7 +21,9 @@ from app.modules.dashboards.routes import router as dashboards_router
 from app.modules.delivery.routes import router as delivery_router
 from app.modules.marketplace.routes import router as marketplace_router
 from app.modules.orders.routes import router as orders_router
+from app.modules.payments.routes import router as payments_router
 from app.modules.pricing.routes import router as pricing_router
+from app.modules.routing import router as routing_router
 from app.modules.shipments.routes import router as shipments_router
 
 settings = get_settings()
@@ -79,3 +81,5 @@ app.include_router(audit_router, prefix=settings.api_v1_prefix, tags=["administr
 app.include_router(customers_router, prefix=settings.api_v1_prefix, tags=["customers"])
 app.include_router(dashboards_router, prefix=settings.api_v1_prefix, tags=["dashboards"])
 app.include_router(delivery_router, prefix=settings.api_v1_prefix, tags=["delivery operations"])
+app.include_router(payments_router, prefix=settings.api_v1_prefix, tags=["payments"])
+app.include_router(routing_router, prefix=settings.api_v1_prefix, tags=["routing"])
