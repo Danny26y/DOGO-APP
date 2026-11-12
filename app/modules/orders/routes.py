@@ -10,13 +10,21 @@ from app.db.session import get_db
 from app.modules.audit.service import record_audit
 from app.modules.auth.models import OrganizationMembership, User
 from app.modules.customers.models import CustomerAddress
-from app.modules.marketplace.models import Product
-from app.modules.orders.models import Cart, CartItem, Order, OrderItem
+from app.modules.marketplace.models import InventoryMovement, Product
+from app.modules.orders.models import (
+    Cart,
+    CartItem,
+    InventoryReservation,
+    Order,
+    OrderFulfillment,
+    OrderItem,
+)
 from app.modules.orders.schemas import (
     CancelOrderRequest,
     CartItemInput,
     CartResponse,
     CreateOrderRequest,
+    FulfillmentTransition,
     MerchantOrderResponse,
     OrderItemResponse,
     OrderResponse,
@@ -40,7 +48,7 @@ def cart_response(cart: Cart, db: Session) -> CartResponse:
     for item in cart.items:
         product = db.get(Product, item.product_id)
         if product is not None:
-            result.append({"product_id": product.id, "product_title": product.title, "quantity": item.quantity, "unit_price_minor": product.price_minor, "currency": product.currency, "available_stock": product.stock_quantity})
+            result.append({"product_id": product.id, "product_title": product.title, "quantity": item.quantity, "unit_price_minor": product.price_minor, "currency": product.currency, "available_stock": product.stock_quantity - product.reserved_quantity})
     return CartResponse(items=result)
 
 
@@ -54,7 +62,7 @@ def set_cart_item(payload: CartItemInput, user: User = Depends(get_current_user)
     product = db.scalar(select(Product).where(Product.id == payload.product_id, Product.published.is_(True)))
     if product is None:
         raise HTTPException(status_code=404, detail="Product is not available")
-    if payload.quantity > product.stock_quantity:
+    if payload.quantity > product.stock_quantity - product.reserved_quantity:
         raise HTTPException(status_code=409, detail="Requested quantity exceeds current stock")
     cart = get_or_create_cart(user.id, db)
     item = db.scalar(select(CartItem).where(CartItem.cart_id == cart.id, CartItem.product_id == product.id).with_for_update())
@@ -97,7 +105,7 @@ def create_order(
     products = []
     for item in cart.items:
         product = db.scalar(select(Product).where(Product.id == item.product_id, Product.published.is_(True)).with_for_update())
-        if product is None or product.stock_quantity < item.quantity:
+        if product is None or product.stock_quantity - product.reserved_quantity < item.quantity:
             raise HTTPException(status_code=409, detail="A cart item is no longer available in the requested quantity")
         products.append((item, product))
     currencies = {product.currency for _, product in products}
@@ -190,6 +198,7 @@ def list_merchant_orders(organization_id: str, user: User = Depends(get_current_
     results = []
     for order in orders:
         visible_items = [item for item in order.items if item.merchant_organization_id == organization_id]
+        fulfillment_status = db.scalar(select(OrderFulfillment.status).where(OrderFulfillment.order_id == order.id, OrderFulfillment.organization_id == organization_id))
         results.append(MerchantOrderResponse(
             id=order.id,
             status=order.status,
@@ -197,6 +206,48 @@ def list_merchant_orders(organization_id: str, user: User = Depends(get_current_
             currency=order.currency,
             merchant_subtotal_minor=sum(item.line_total_minor for item in visible_items),
             created_at=order.created_at,
+            fulfillment_status=fulfillment_status,
             items=[OrderItemResponse.model_validate(item) for item in visible_items],
         ))
     return results
+
+
+@router.patch("/merchant/orders/{order_id}/fulfillment")
+def transition_merchant_fulfillment(
+    order_id: str,
+    payload: FulfillmentTransition,
+    organization_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    role = db.scalar(select(OrganizationMembership.role).where(OrganizationMembership.user_id == user.id, OrganizationMembership.organization_id == organization_id))
+    if role not in {"owner", "admin", "merchant_staff"}:
+        raise HTTPException(status_code=404, detail="Merchant organization not found")
+    order = db.scalar(select(Order).where(Order.id == order_id).with_for_update())
+    fulfillment = db.scalar(select(OrderFulfillment).where(OrderFulfillment.order_id == order_id, OrderFulfillment.organization_id == organization_id).with_for_update())
+    if order is None or fulfillment is None:
+        raise HTTPException(status_code=404, detail="Merchant fulfillment not found")
+    if order.payment_status != "paid":
+        raise HTTPException(status_code=409, detail="Only successfully paid orders can be fulfilled")
+    if order.status == "paid_needs_review":
+        raise HTTPException(status_code=409, detail="Order requires inventory review before fulfillment")
+    allowed = {"pending": "accepted", "accepted": "preparing", "preparing": "ready_for_pickup", "ready_for_pickup": "handed_to_rider"}
+    if allowed.get(fulfillment.status) != payload.status:
+        raise HTTPException(status_code=409, detail=f"Invalid fulfillment transition from {fulfillment.status}")
+    if payload.status == "handed_to_rider":
+        items = list(db.scalars(select(OrderItem).where(OrderItem.order_id == order_id, OrderItem.merchant_organization_id == organization_id).order_by(OrderItem.product_id).with_for_update()))
+        for item in items:
+            reservation = db.scalar(select(InventoryReservation).where(InventoryReservation.order_item_id == item.id, InventoryReservation.status == "reserved").with_for_update())
+            product = db.scalar(select(Product).where(Product.id == item.product_id).with_for_update())
+            if reservation is None or product is None or product.reserved_quantity < reservation.quantity or product.stock_quantity < reservation.quantity:
+                db.rollback()
+                raise HTTPException(status_code=409, detail="Reserved inventory is inconsistent; contact platform operations")
+            product.reserved_quantity -= reservation.quantity
+            product.stock_quantity -= reservation.quantity
+            reservation.status = "consumed"
+            db.add(InventoryMovement(organization_id=organization_id, product_id=product.id, quantity_delta=-reservation.quantity, reason=f"Order {order_id} handed to rider", created_by_user_id=user.id))
+    previous = fulfillment.status
+    fulfillment.status = payload.status
+    record_audit(db, actor_user_id=user.id, action="order.fulfillment_transitioned", resource_type="order_fulfillment", resource_id=fulfillment.id, organization_id=organization_id, details={"from": previous, "to": payload.status, "order_id": order_id})
+    db.commit()
+    return {"order_id": order_id, "organization_id": organization_id, "status": fulfillment.status}

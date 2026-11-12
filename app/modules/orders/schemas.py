@@ -82,4 +82,9 @@ class MerchantOrderResponse(BaseModel):
     currency: str
     merchant_subtotal_minor: int
     created_at: datetime
+    fulfillment_status: str | None = None
     items: list[OrderItemResponse]
+
+
+class FulfillmentTransition(BaseModel):
+    status: str = Field(pattern="^(accepted|preparing|ready_for_pickup|handed_to_rider)$")

@@ -55,7 +55,7 @@ def list_products(
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ):
-    query = select(Product).where(Product.published.is_(True), Product.stock_quantity > 0).order_by(Product.created_at.desc())
+    query = select(Product).where(Product.published.is_(True), Product.stock_quantity > Product.reserved_quantity).order_by(Product.created_at.desc())
     if search:
         query = query.where(Product.title.ilike(f"%{search}%"))
     if category_id:
@@ -80,7 +80,7 @@ def get_storefront(
     profile, organization_name = row
     products = list(db.scalars(
         select(Product)
-        .where(Product.organization_id == profile.organization_id, Product.published.is_(True), Product.stock_quantity > 0)
+        .where(Product.organization_id == profile.organization_id, Product.published.is_(True), Product.stock_quantity > Product.reserved_quantity)
         .order_by(Product.created_at.desc())
         .offset(offset)
         .limit(limit)
@@ -151,7 +151,7 @@ def merchant_dashboard(organization_id: str, user: User = Depends(get_current_us
         select(
             func.count(Product.id),
             func.sum(Product.published.cast(Integer)),
-            func.sum((Product.stock_quantity == 0).cast(Integer)),
+            func.sum((Product.stock_quantity <= Product.reserved_quantity).cast(Integer)),
         ).where(Product.organization_id == organization_id)
     ).one()
     rows = db.execute(
@@ -212,7 +212,7 @@ def adjust_inventory(product_id: str, payload: InventoryAdjustment, organization
     require_product_owner(db, user.id, organization_id)
     statement = (
         update(Product)
-        .where(Product.id == product_id, Product.organization_id == organization_id, Product.stock_quantity + payload.quantity_delta >= 0)
+        .where(Product.id == product_id, Product.organization_id == organization_id, Product.stock_quantity + payload.quantity_delta >= Product.reserved_quantity)
         .values(stock_quantity=Product.stock_quantity + payload.quantity_delta)
     )
     result = db.execute(statement)

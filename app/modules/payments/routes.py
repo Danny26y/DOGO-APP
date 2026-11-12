@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.api.dependencies import get_current_user
 from app.core.config import get_settings
@@ -15,7 +15,8 @@ from app.integrations.paystack import PaystackError, PaystackProvider
 from app.integrations.ports import PaymentIntentRequest
 from app.modules.audit.service import record_audit
 from app.modules.auth.models import User
-from app.modules.orders.models import Order
+from app.modules.marketplace.models import Product
+from app.modules.orders.models import InventoryReservation, Order, OrderFulfillment
 from app.modules.payments.models import Payment, PaymentProviderEvent
 
 router = APIRouter()
@@ -84,7 +85,7 @@ async def paystack_webhook(request: Request, x_paystack_signature: str | None = 
     payment = db.scalar(select(Payment).where(Payment.provider_reference == event.provider_reference).with_for_update())
     if payment is None:
         raise HTTPException(status_code=404, detail="Payment reference not found")
-    order = db.scalar(select(Order).where(Order.id == payment.order_id).with_for_update())
+    order = db.scalar(select(Order).options(selectinload(Order.items)).where(Order.id == payment.order_id).with_for_update())
     if event.order_id != order.id or event.amount_minor != payment.amount_minor or event.currency != payment.currency:
         raise HTTPException(status_code=409, detail="Payment details do not match the order")
     db.add(PaymentProviderEvent(provider="paystack", provider_event_id=event.provider_event_id, payload=data))
@@ -94,12 +95,28 @@ async def paystack_webhook(request: Request, x_paystack_signature: str | None = 
     if event.status == "success":
         payment.status = "succeeded"
         order.payment_status = "paid"
-        if order.status == "awaiting_payment":
-            order.status = "paid"
-            action = "payment.verified"
+        if order.status != "awaiting_payment":
+            record_audit(db, actor_user_id=None, action="payment.succeeded_after_order_state_change", resource_type="payment", resource_id=payment.id, details={"order_id": order.id, "order_status": order.status})
         else:
-            action = "payment.succeeded_after_order_state_change"
-        record_audit(db, actor_user_id=None, action=action, resource_type="payment", resource_id=payment.id, details={"order_id": order.id, "order_status": order.status})
+            requirements = {}
+            for item in order.items:
+                requirements[item.product_id] = requirements.get(item.product_id, 0) + item.quantity
+            products = {p.id: p for p in db.scalars(select(Product).where(Product.id.in_(sorted(requirements))).order_by(Product.id).with_for_update())} if requirements else {}
+            stock_available = len(products) == len(requirements) and all(products[pid].stock_quantity - products[pid].reserved_quantity >= qty for pid, qty in requirements.items())
+            if not stock_available:
+                order.status = "paid_needs_review"
+                record_audit(db, actor_user_id=None, action="payment.paid_inventory_exception", resource_type="order", resource_id=order.id, details={"order_id": order.id})
+            else:
+                order.status = "paid"
+                merchant_ids = set()
+                for item in order.items:
+                    product = products[item.product_id]
+                    product.reserved_quantity += item.quantity
+                    db.add(InventoryReservation(order_item_id=item.id, product_id=product.id, organization_id=item.merchant_organization_id, quantity=item.quantity))
+                    merchant_ids.add(item.merchant_organization_id)
+                for organization_id in merchant_ids:
+                    db.add(OrderFulfillment(order_id=order.id, organization_id=organization_id, status="pending"))
+                record_audit(db, actor_user_id=None, action="payment.verified_and_inventory_reserved", resource_type="payment", resource_id=payment.id, details={"order_id": order.id, "merchant_count": len(merchant_ids)})
     else:
         payment.status = "failed"
     try:

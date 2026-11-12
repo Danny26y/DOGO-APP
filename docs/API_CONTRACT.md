@@ -39,7 +39,8 @@ Base path: `/api/v1`. OpenAPI is exposed by FastAPI at `/openapi.json`; interact
 | `GET /cart`, `PUT /cart/items`, `DELETE /cart/items/{product_id}` | Read/edit customer cart | Authenticated customer | Cart belongs to caller; only published products can be added |
 | `POST /orders`, `GET /orders` | Create pending order/history | Authenticated customer | Requires `Idempotency-Key` and caller-owned `delivery_address_id`; snapshots item prices and selected address; stays `awaiting_payment` |
 | `POST /orders/{id}/cancel` | Cancel an order | Owning customer | Requires a nonblank reason; only unpaid `awaiting_payment` orders can be cancelled; no cancellation fee is applied |
-| `GET /merchant/orders` | Merchant order view | Merchant owner | Only that merchant's line items and subtotal are returned |
+| `GET /merchant/orders` | Merchant order view | Merchant owner/admin/staff | Only that merchant's line items, subtotal, and fulfillment status are returned |
+| `PATCH /merchant/orders/{order_id}/fulfillment?organization_id=...` | Advance merchant fulfillment | Merchant owner/admin/staff | Strict progression from accepted to preparing, ready for pickup, and handed to rider; paid orders only; handing off consumes reserved stock |
 | `GET /marketplace/stores/{storefront_slug}` | Public merchant storefront | Public | Store profile and paged published, in-stock products |
 | `GET /admin/dashboard/summary` | Platform dashboard summary | Platform admin email allowlist | User, organization, product, order and shipment counts; excludes money, live GPS and dispatch forecasts |
 | `POST /delivery/agents/apply`, `GET /delivery/me` | Apply for/list rider or driver profile | Authenticated user | Applications start pending; platform admin activation required |

@@ -99,29 +99,48 @@ def test_paystack_initialize_and_signed_webhook_update_order_idempotently(monkey
 
     import app.modules.payments.routes as payment_routes
     from app.integrations.ports import PaymentIntentResult, VerifiedPaymentEvent
-    from app.modules.orders.models import Order
-    from app.modules.payments.models import Payment
+    from app.modules.marketplace.models import InventoryMovement, Product
+    from app.modules.orders.models import (
+        InventoryReservation,
+        Order,
+        OrderFulfillment,
+        OrderItem,
+    )
+    from app.modules.payments.models import Payment, PaymentProviderEvent
 
     email = "payment-flow@example.com"
     account = client.post("/api/v1/auth/register", json={"email": email, "password": "Correct-Horse-Pay-42!"})
     token = account.json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
     with TestingSession() as session:
-        order = Order(customer_user_id=session.scalar(select(User.id).where(User.email == email)), idempotency_key="order-idempotency-1", currency="NGN", subtotal_minor=350000)
+        customer_id = session.scalar(select(User.id).where(User.email == email))
+        organization = Organization(name="Payment Test Store", organization_type="business")
+        session.add(organization)
+        session.flush()
+        session.add(OrganizationMembership(user_id=customer_id, organization_id=organization.id, role="owner"))
+        category_id = session.scalar(select(ProductCategory.id).limit(1))
+        product = Product(organization_id=organization.id, category_id=category_id, title="Test item", description="", price_minor=175000, currency="NGN", stock_quantity=10, reserved_quantity=0, published=False)
+        session.add(product)
+        session.flush()
+        order = Order(customer_user_id=customer_id, idempotency_key="order-idempotency-1", currency="NGN", subtotal_minor=350000)
         session.add(order)
+        session.flush()
+        session.add(OrderItem(order_id=order.id, product_id=product.id, merchant_organization_id=organization.id, product_title=product.title, quantity=2, unit_price_minor=product.price_minor, currency="NGN", line_total_minor=350000))
         session.commit()
         order_id = order.id
+        organization_id = organization.id
+        product_id = product.id
 
     class FakePaystack:
         def __init__(self):
             pass
 
         def create_intent(self, request, email):
-            return PaymentIntentResult("ps-ref-1", "https://checkout.paystack.test/ref", None)
+            return PaymentIntentResult(f"ps-{request.order_id}", "https://checkout.paystack.test/ref", None)
 
         def verify_webhook(self, headers, body):
             data = json.loads(body)["data"]
-            return VerifiedPaymentEvent("charge.success:123", data["reference"], data["metadata"]["order_id"], data["amount"], data["currency"], data["status"], datetime.now(UTC))
+            return VerifiedPaymentEvent(f"charge.success:{data['id']}", data["reference"], data["metadata"]["order_id"], data["amount"], data["currency"], data["status"], datetime.now(UTC))
 
     monkeypatch.setattr(payment_routes, "PaystackProvider", FakePaystack)
     initialized = client.post("/api/v1/payments/initialize", headers=headers, json={"order_id": order_id, "return_url": "http://localhost:3000/checkout/return"})
@@ -139,6 +158,45 @@ def test_paystack_initialize_and_signed_webhook_update_order_idempotently(monkey
     with TestingSession() as session:
         assert session.get(Order, order_id).payment_status == "paid"
         assert session.scalar(select(Payment).where(Payment.order_id == order_id)).status == "succeeded"
+        product = session.get(Product, product_id)
+        assert product.stock_quantity == 10 and product.reserved_quantity == 2
+        assert session.scalar(select(InventoryReservation.status)) == "reserved"
+        second_order = Order(customer_user_id=session.scalar(select(User.id).where(User.email == email)), idempotency_key="order-idempotency-2", currency="NGN", subtotal_minor=1_575_000)
+        session.add(second_order)
+        session.flush()
+        session.add(OrderItem(order_id=second_order.id, product_id=product_id, merchant_organization_id=organization_id, product_title="Test item", quantity=9, unit_price_minor=175000, currency="NGN", line_total_minor=1_575_000))
+        session.commit()
+        second_order_id = second_order.id
+    second_intent = client.post("/api/v1/payments/initialize", headers=headers, json={"order_id": second_order_id, "return_url": "http://localhost:3000/checkout/return"})
+    assert second_intent.status_code == 201
+    second_body = json.dumps({"event": "charge.success", "data": {"id": 124, "reference": second_intent.json()["reference"], "status": "success", "amount": 1_575_000, "currency": "NGN", "metadata": {"order_id": second_order_id}}}).encode()
+    assert client.post("/api/v1/webhooks/paystack", content=second_body, headers={"Content-Type": "application/json", "x-paystack-signature": "test"}).status_code == 200
+    with TestingSession() as session:
+        assert session.get(Order, second_order_id).status == "paid_needs_review"
+        assert session.get(Product, product_id).reserved_quantity == 2
+    for status in ("accepted", "preparing", "ready_for_pickup", "handed_to_rider"):
+        progressed = client.patch(f"/api/v1/merchant/orders/{order_id}/fulfillment?organization_id={organization_id}", headers=headers, json={"status": status})
+        assert progressed.status_code == 200, progressed.text
+    with TestingSession() as session:
+        product = session.get(Product, product_id)
+        assert product.stock_quantity == 8 and product.reserved_quantity == 0
+        assert session.scalar(select(InventoryReservation.status)) == "consumed"
+        session.query(InventoryMovement).filter(InventoryMovement.product_id == product_id).delete(synchronize_session=False)
+        session.query(InventoryReservation).filter(InventoryReservation.product_id == product_id).delete(synchronize_session=False)
+        session.query(OrderFulfillment).filter(OrderFulfillment.order_id == order_id).delete(synchronize_session=False)
+        session.query(PaymentProviderEvent).filter(PaymentProviderEvent.provider_event_id == "charge.success:123").delete(synchronize_session=False)
+        session.query(PaymentProviderEvent).filter(PaymentProviderEvent.provider_event_id == "charge.success:124").delete(synchronize_session=False)
+        session.query(Payment).filter(Payment.order_id == order_id).delete(synchronize_session=False)
+        session.query(Payment).filter(Payment.order_id == second_order_id).delete(synchronize_session=False)
+        session.query(OrderItem).filter(OrderItem.order_id == order_id).delete(synchronize_session=False)
+        session.query(OrderItem).filter(OrderItem.order_id == second_order_id).delete(synchronize_session=False)
+        session.query(Order).filter(Order.id == order_id).delete(synchronize_session=False)
+        session.query(Order).filter(Order.id == second_order_id).delete(synchronize_session=False)
+        session.query(Product).filter(Product.id == product_id).delete(synchronize_session=False)
+        session.query(OrganizationMembership).filter(OrganizationMembership.organization_id == organization_id).delete(synchronize_session=False)
+        session.query(Organization).filter(Organization.id == organization_id).delete(synchronize_session=False)
+        session.query(User).filter(User.email == email).delete(synchronize_session=False)
+        session.commit()
 
 
 def test_register_login_and_me():

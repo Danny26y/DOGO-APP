@@ -1,7 +1,15 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -60,3 +68,30 @@ class OrderItem(Base):
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
     line_total_minor: Mapped[int] = mapped_column(Integer, nullable=False)
     order: Mapped[Order] = relationship(back_populates="items")
+
+
+class InventoryReservation(Base):
+    __tablename__ = "inventory_reservations"
+    __table_args__ = (
+        UniqueConstraint("order_item_id", name="uq_inventory_reservation_order_item"),
+        CheckConstraint("quantity > 0", name="ck_inventory_reservation_positive_quantity"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    order_item_id: Mapped[str] = mapped_column(ForeignKey("order_items.id", ondelete="CASCADE"), index=True, nullable=False)
+    product_id: Mapped[str] = mapped_column(ForeignKey("products.id"), index=True, nullable=False)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True, nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="reserved")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
+
+
+class OrderFulfillment(Base):
+    __tablename__ = "order_fulfillments"
+    __table_args__ = (UniqueConstraint("order_id", "organization_id", name="uq_fulfillment_order_merchant"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    order_id: Mapped[str] = mapped_column(ForeignKey("orders.id", ondelete="CASCADE"), index=True, nullable=False)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending", index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC), nullable=False)

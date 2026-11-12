@@ -19,3 +19,7 @@ Customers upload raw PDF, JPEG or PNG bytes to `POST /api/v1/customers/me/identi
 ## Required runtime configuration
 
 `PAYSTACK_PUBLIC_KEY`, `PAYSTACK_SECRET_KEY`, `EMAIL_OTP_ENABLED`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `EMAIL_FROM`, `OSRM_BASE_URL`, `EMAIL_OTP_TTL_MINUTES`, and `VERIFICATION_UPLOAD_DIR` are environment settings. Leave provider credentials unset in source control. Sandbox payment tests require Paystack test keys; real email tests require SMTP credentials. Local unit tests use mocks and need no credentials.
+
+## Merchant fulfillment and inventory
+
+Once a signed Paystack success event is validated, inventory quantities are reserved under the payment transaction. Product availability is on-hand stock minus reservations. A paid order with insufficient stock is marked `paid_needs_review` and is not made fulfillable. Each merchant portion has an independent fulfillment status and is advanced using `PATCH /api/v1/merchant/orders/{order_id}/fulfillment?organization_id=...` through `accepted`, `preparing`, `ready_for_pickup`, and `handed_to_rider`. Handoff consumes its reservations, decrements on-hand quantity, and adds an inventory movement. The backend does not create or assign a shipment from this workflow; refund, cancellation, and reservation release rules need a separate approved policy.

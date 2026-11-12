@@ -2,7 +2,15 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -44,6 +52,7 @@ class Product(Base):
     width_cm: Mapped[Decimal | None] = mapped_column(Numeric(8, 2))
     height_cm: Mapped[Decimal | None] = mapped_column(Numeric(8, 2))
     stock_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    reserved_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     published: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC), nullable=False)
